@@ -15,61 +15,14 @@ jobs:
     - name: Repoyu Klonla
       uses: actions/checkout@v4
 
-    - name: Python ve Streamlink Kurulumu
+    - name: Python Kurulumu
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Yayınları Çek (Python Script)
       run: |
-        python -m pip install --upgrade pip
-        pip install --upgrade streamlink
-
-    - name: M3U8 Dosyalarını ve Playlist Oluştur
-      run: |
-        set +e
-
-        mkdir -p dizi
-        touch dizi/.gitkeep
-
-        echo "#EXTM3U" > "./dizi/playlist.m3u8"
-
-        channels=(
-          "cennetmahallesi https://www.youtube.com/@cennetmahallesishowtv/live"
-          "behzatc https://www.youtube.com/@Behzatc./live"
-          "yenigelin https://www.youtube.com/@yenigelindizi/live"
-          "sihirliannem https://www.youtube.com/@SihirliAnnemDizi/live"
-          "eeesonra https://www.youtube.com/@EeeSonra/live"
-          "sefirinkizi https://www.youtube.com/@sefirinkizidizi/live"
-          "avlu https://www.youtube.com/@avludizi/live"
-          "cilekkokusu https://www.youtube.com/@CilekKokusu/live"
-          "fazilethanimvekizlari https://www.youtube.com/@fazilethanimvekizlaridizi/live"
-          "hanimkoylu https://www.youtube.com/@HanimKoyluDizi/live"
-          "hayatbazentatlidir https://www.youtube.com/@HayatBazenTatlidir/live"
-          "ufaktefekcinayetler https://www.youtube.com/@ufaktefekcinayetlerdizi/live"
-          "istanbullugelin https://www.youtube.com/@istanbullugelindizi/live"
-        )
-
-        for item in "${channels[@]}"; do
-          name=$(echo $item | cut -d' ' -f1)
-          url=$(echo $item | cut -d' ' -f2)
-          
-          echo "Yayın taranıyor: $name ..."
-          
-          # Streamlink ile doğrudan m3u8 stream adresi alınır
-          stream_url=$(streamlink --stream-url "$url" best 2>/dev/null | grep -E '^https?://' | head -n 1)
-          
-          if [ -n "$stream_url" ]; then
-            # Tekil M3U8
-            echo "#EXTM3U" > "./dizi/${name}.m3u8"
-            echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
-            echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
-            echo "$stream_url" >> "./dizi/${name}.m3u8"
-
-            # Toplu Playlist
-            echo "#EXTINF:-1 tvg-name=\"$name\", $name" >> "./dizi/playlist.m3u8"
-            echo "$stream_url" >> "./dizi/playlist.m3u8"
-
-            echo "✅ $name.m3u8 oluşturuldu."
-          else
-            echo "❌ $name için yayın bulunamadı (Yayın kapalı olabilir)."
-          fi
-        done
+        python get_streams.py
 
     - name: Commit & Push
       run: |
