@@ -50,7 +50,7 @@ def get_live_url(youtube_url):
     """YouTube canlı yayın URL'sini alır."""
     try:
         result = subprocess.run(
-            [YT_DLP, "-f", "best", "-g", youtube_url],
+            [YT_DLP, "-g", youtube_url],
             capture_output=True,
             text=True,
             timeout=YT_DLP_TIMEOUT
