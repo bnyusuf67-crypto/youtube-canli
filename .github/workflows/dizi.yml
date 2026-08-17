@@ -20,9 +20,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install --upgrade yt-dlp
 
-    - name: M3U8 Dosyalarını Oluştur
+    - name: Tekil M3U8 Dosyalarını Oluştur
       run: |
         mkdir -p dizi
+        touch dizi/.gitkeep
 
         channels=(
           "cennetmahallesi https://www.youtube.com/@cennetmahallesishowtv/live"
@@ -48,10 +49,12 @@ jobs:
           stream_url=$(yt-dlp --print urls "$url" || echo "")
           
           if [ -n "$stream_url" ]; then
+            # Sadece tekil (bağımsız) m3u8 dosyası üretir
             echo "#EXTM3U" > "./dizi/${name}.m3u8"
             echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
             echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
             echo "$stream_url" >> "./dizi/${name}.m3u8"
+
             echo "✅ $name.m3u8 oluşturuldu."
           else
             echo "❌ Canlı yayın bulunamadı: $name"
