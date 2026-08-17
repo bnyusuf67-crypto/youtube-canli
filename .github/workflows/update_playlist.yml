@@ -28,7 +28,6 @@ jobs:
       - name: Playlist Oluştur
         run: python generate_playlist.py
 
-      # Üçüncü parti paket yerine doğrudan standart Git komutları kullanıyoruz
       - name: Değişiklikleri Kaydet ve Gönder
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
