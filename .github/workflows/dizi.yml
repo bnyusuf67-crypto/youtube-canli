@@ -20,10 +20,13 @@ jobs:
         python -m pip install --upgrade pip
         pip install --upgrade yt-dlp
 
-    - name: Tekil M3U8 Dosyalarını Oluştur
+    - name: M3U8 Dosyalarını ve Playlist Oluştur
       run: |
         mkdir -p dizi
         touch dizi/.gitkeep
+
+        # Ana çalma listesini başlat
+        echo "#EXTM3U" > "./dizi/playlist.m3u8"
 
         channels=(
           "cennetmahallesi https://www.youtube.com/@cennetmahallesishowtv/live"
@@ -45,19 +48,25 @@ jobs:
           name=$(echo $item | cut -d' ' -f1)
           url=$(echo $item | cut -d' ' -f2)
           
-          echo "Yayın taranıyor: $name ..."
-          stream_url=$(yt-dlp --print urls "$url" || echo "")
+          echo "Yayın taranıyor: $name ($url)..."
+          
+          # YouTube bot engeline takılmamak için android istemcisi simüle edilir
+          stream_url=$(yt-dlp --extractor-args "youtube:player_client=android,web" --print urls "$url" 2>&1 | grep -E '^https?://' | head -n 1 || echo "")
           
           if [ -n "$stream_url" ]; then
-            # Sadece tekil (bağımsız) m3u8 dosyası üretir
+            # Tekil m3u8 dosyası oluştur
             echo "#EXTM3U" > "./dizi/${name}.m3u8"
             echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
             echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
             echo "$stream_url" >> "./dizi/${name}.m3u8"
 
+            # Toplu playlist.m3u8 dosyasına ekle
+            echo "#EXTINF:-1 tvg-name=\"$name\", $name" >> "./dizi/playlist.m3u8"
+            echo "$stream_url" >> "./dizi/playlist.m3u8"
+
             echo "✅ $name.m3u8 oluşturuldu."
           else
-            echo "❌ Canlı yayın bulunamadı: $name"
+            echo "❌ $name için yayın adresi çekilemedi (Canlı yayın kapalı veya kanal adresi geçersiz olabilir)."
           fi
         done
 
