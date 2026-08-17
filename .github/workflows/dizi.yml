@@ -17,6 +17,7 @@ jobs:
 
     - name: Get CennetMahallesi
       run: |
+        mkdir -p dizi
         touch ./dizi/cennetmahallesi.m3u8
         sudo cat >./dizi/cennetmahallesi.m3u8 <<EOL
         #EXTM3U
