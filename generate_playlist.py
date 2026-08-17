@@ -69,7 +69,7 @@ def get_live_url(youtube_url):
 def write_channel_file(slug, name, url):
     """Her kanal için ayrı .m3u8 dosyası oluşturur."""
     content = f"""#EXTM3U
-#EXTINF:-1 tvg-name="{name}" http-user-agent="{USER_AGENT}",{name}
+#EXT-X-STREAM-INF:BANDWIDTH=7680000
 {url}
 """
     filepath = os.path.join(STREAMS_DIR, f"{slug}.m3u8")
