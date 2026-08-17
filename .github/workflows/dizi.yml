@@ -15,14 +15,13 @@ jobs:
     - name: Repoyu Klonla
       uses: actions/checkout@v4
 
-    - name: Python ve yt-dlp Kurulumu
+    - name: Python ve Streamlink Kurulumu
       run: |
         python -m pip install --upgrade pip
-        pip install --upgrade yt-dlp
+        pip install --upgrade streamlink
 
     - name: M3U8 Dosyalarını ve Playlist Oluştur
       run: |
-        # Script'in bir hatada durmasını engeller
         set +e
 
         mkdir -p dizi
@@ -52,21 +51,23 @@ jobs:
           
           echo "Yayın taranıyor: $name ..."
           
-          # yt-dlp çıktılarını güvenli şekilde yakalar
-          stream_url=$(yt-dlp --no-warnings --print urls "$url" 2>/dev/null | grep -E '^https?://' | head -n 1)
+          # Streamlink ile doğrudan m3u8 stream adresi alınır
+          stream_url=$(streamlink --stream-url "$url" best 2>/dev/null | grep -E '^https?://' | head -n 1)
           
           if [ -n "$stream_url" ]; then
+            # Tekil M3U8
             echo "#EXTM3U" > "./dizi/${name}.m3u8"
             echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
             echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
             echo "$stream_url" >> "./dizi/${name}.m3u8"
 
+            # Toplu Playlist
             echo "#EXTINF:-1 tvg-name=\"$name\", $name" >> "./dizi/playlist.m3u8"
             echo "$stream_url" >> "./dizi/playlist.m3u8"
 
             echo "✅ $name.m3u8 oluşturuldu."
           else
-            echo "❌ $name için canlı yayın bulunamadı."
+            echo "❌ $name için yayın bulunamadı (Yayın kapalı olabilir)."
           fi
         done
 
