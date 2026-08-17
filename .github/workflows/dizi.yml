@@ -22,7 +22,7 @@ jobs:
 
     - name: Yayınları Çek (Python Script)
       run: |
-        python get_streams.py
+        python dizi.py
 
     - name: Commit & Push
       run: |
