@@ -35,7 +35,9 @@ kanallar = [
 
 # -------------------- AYARLAR --------------------
 STREAMS_DIR = "streams"
-YT_DLP_TIMEOUT = 60  # saniye
+PLAYLIST_FILE = "playlist.m3u"
+USER_AGENT = "VLC/3.0.20"
+YT_DLP_TIMEOUT = 30  # saniye
 
 # yt-dlp yolunu bul
 YT_DLP = shutil.which("yt-dlp")
@@ -67,13 +69,40 @@ def get_live_url(youtube_url):
 def write_channel_file(slug, name, url):
     """Her kanal için ayrı .m3u8 dosyası oluşturur."""
     content = f"""#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=7680000
+#EXTINF:-1 tvg-name="{name}" http-user-agent="{USER_AGENT}",{name}
 {url}
 """
     filepath = os.path.join(STREAMS_DIR, f"{slug}.m3u8")
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
     return filepath
+
+# -------------------- ANA PROGRAM --------------------
+def main():
+    os.makedirs(STREAMS_DIR, exist_ok=True)
+    ana_m3u = "#EXTM3U\n"
+    print("📡 Kanal linkleri toplanıyor...\n")
+
+    for slug, isim, url in kanallar:
+        print(f"➡️  {isim} ... ", end="", flush=True)
+        link, hata = get_live_url(url)
+        if link is None:
+            print(f"❌ {hata}")
+            continue
+
+        # Dosyayı yaz
+        write_channel_file(slug, isim, link)
+
+        # Ana playlist'e ekle
+        ana_m3u += f'#EXTINF:-1 tvg-name="{isim}" group-title="Canlı" http-user-agent="{USER_AGENT}",{isim}\n{link}\n'
+        print("✅ OK")
+
+    # Ana playlist'i kaydet
+    with open(PLAYLIST_FILE, "w", encoding="utf-8") as f:
+        f.write(ana_m3u)
+
+    print(f"\n📁 Dosyalar '{STREAMS_DIR}/' klasörüne ve '{PLAYLIST_FILE}' dosyasına kaydedildi.")
+
 
 if __name__ == "__main__":
     main()
