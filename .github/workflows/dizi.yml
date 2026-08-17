@@ -44,6 +44,7 @@ jobs:
           name=$(echo $item | cut -d' ' -f1)
           url=$(echo $item | cut -d' ' -f2)
           
+          echo "Yayın taranıyor: $name ..."
           stream_url=$(yt-dlp --print urls "$url" || echo "")
           
           if [ -n "$stream_url" ]; then
@@ -51,14 +52,12 @@ jobs:
             echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
             echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
             echo "$stream_url" >> "./dizi/${name}.m3u8"
+            echo "✅ $name.m3u8 oluşturuldu."
           else
-            echo "Açık canlı yayın bulunamadı: $name"
+            echo "❌ Canlı yayın bulunamadı: $name"
           fi
         done
 
-    - name: Dosyaları Listele
-      run: ls -R
-      
     - name: Commit & Push
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
