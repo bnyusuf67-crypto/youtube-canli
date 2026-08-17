@@ -1,8 +1,8 @@
-name: run main.py
+name: Update playlist
 
 on:
   schedule:
-    - cron: '0 */2 * * *' # Runs in every 3 hours
+    - cron: '0 */3 * * *' # Runs in every 3 hours
   pull_request:
       branches:
         - main
