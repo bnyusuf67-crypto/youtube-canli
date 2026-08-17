@@ -1,0 +1,71 @@
+name: Dizi
+
+on:
+  schedule:
+    - cron: '0 */3 * * *' # Her 3 saatte bir otomatik çalışır
+  workflow_dispatch: # Manuel tetikleme butonu
+
+# Git push işlemi yapabilmesi için yazma izni ekliyoruz
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Repoyu Klonla
+      uses: actions/checkout@v4
+
+    - name: Python ve yt-dlp Kurulumu
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade yt-dlp
+
+    - name: M3U8 Dosyalarını Oluştur
+      run: |
+        mkdir -p dizi
+
+        # Yayın adresleri ve hedef dosya isimleri
+        declare -A channels=(
+          ["cennetmahallesi"]="https://www.youtube.com/@cennetmahallesishowtv/live"
+          ["behzatc"]="https://www.youtube.com/@Behzatc./live"
+          ["yenigelin"]="https://www.youtube.com/@yenigelindizi/live"
+          ["sihirliannem"]="https://www.youtube.com/@SihirliAnnemDizi/live"
+          ["eeesonra"]="https://www.youtube.com/@EeeSonra/live"
+          ["sefirinkizi"]="https://www.youtube.com/@sefirinkizidizi/live"
+          ["avlu"]="https://www.youtube.com/@avludizi/live"
+          ["cilekkokusu"]="https://www.youtube.com/@CilekKokusu/live"
+          ["fazilethanimvekizlari"]="https://www.youtube.com/@fazilethanimvekizlaridizi/live"
+          ["hanimkoylu"]="https://www.youtube.com/@HanimKoyluDizi/live"
+          ["hayatbazentatlidir"]="https://www.youtube.com/@HayatBazenTatlidir/live"
+          ["ufaktefekcinayetler"]="https://www.youtube.com/@ufaktefekcinayetlerdizi/live"
+          ["istanbullugelin"]="https://www.youtube.com/@istanbullugelindizi/live"
+        )
+
+        for name in "${!channels[@]}"; do
+          url="${channels[$name]}"
+          stream_url=$(yt-dlp --print urls "$url" || echo "")
+          
+          if [ -n "$stream_url" ]; then
+            cat <<EOL > "./dizi/${name}.m3u8"
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000
+$stream_url
+EOL
+          else
+            echo "Açık canlı yayın bulunamadı: $name"
+          fi
+        done
+
+    - name: Commit & Push
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add dizi/
+        if ! git diff --cached --quiet; then
+          git commit -m "updated streams $(date +'%Y-%m-%d %H:%M:%S') [skip ci]"
+          git push
+        else
+          echo "Değişiklik yok, commit/push atlanıyor."
+        fi
