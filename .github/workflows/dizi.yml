@@ -15,14 +15,16 @@ jobs:
     - name: Repoyu Klonla
       uses: actions/checkout@v4
 
-    - name: Python ve yt-dlp Güncelleme
+    - name: Python ve yt-dlp Kurulumu
       run: |
         python -m pip install --upgrade pip
-        # En güncel koruma yamaları için nightly sürüm kuruluyor
-        pip install --upgrade --force-reinstall https://github.com/yt-dlp/yt-dlp-nightly-builds/archive/master.tar.gz
+        pip install --upgrade yt-dlp
 
     - name: M3U8 Dosyalarını ve Playlist Oluştur
       run: |
+        # Script'in bir hatada durmasını engeller
+        set +e
+
         mkdir -p dizi
         touch dizi/.gitkeep
 
@@ -48,31 +50,23 @@ jobs:
           name=$(echo $item | cut -d' ' -f1)
           url=$(echo $item | cut -d' ' -f2)
           
-          echo "----------------------------------------"
-          echo "Yayın taranıyor: $name ($url)..."
+          echo "Yayın taranıyor: $name ..."
           
-          # iOS ve TV client modları kullanılarak YouTube koruması aşılmaya çalışılır
-          stream_url=$(yt-dlp --extractor-args "youtube:player_client=ios,mweb" --no-warnings --print urls "$url" 2>/dev/null | grep -E '^https?://' | head -n 1 || echo "")
+          # yt-dlp çıktılarını güvenli şekilde yakalar
+          stream_url=$(yt-dlp --no-warnings --print urls "$url" 2>/dev/null | grep -E '^https?://' | head -n 1)
           
-          if [ -z "$stream_url" ]; then
-            # Alternatif yöntem denemesi
-            stream_url=$(yt-dlp --print urls "$url" 2>/dev/null | grep -E '^https?://' | head -n 1 || echo "")
-          fi
-
           if [ -n "$stream_url" ]; then
-            # Tekil m3u8 dosyası oluştur
             echo "#EXTM3U" > "./dizi/${name}.m3u8"
             echo "#EXT-X-VERSION:3" >> "./dizi/${name}.m3u8"
             echo "#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000" >> "./dizi/${name}.m3u8"
             echo "$stream_url" >> "./dizi/${name}.m3u8"
 
-            # Toplu playlist.m3u8 dosyasına ekle
             echo "#EXTINF:-1 tvg-name=\"$name\", $name" >> "./dizi/playlist.m3u8"
             echo "$stream_url" >> "./dizi/playlist.m3u8"
 
             echo "✅ $name.m3u8 oluşturuldu."
           else
-            echo "❌ $name için yayın adresi çekilemedi."
+            echo "❌ $name için canlı yayın bulunamadı."
           fi
         done
 
