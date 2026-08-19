@@ -52,32 +52,31 @@ URL_CACHE = {}
 IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
-COMMON_HEADERS = [
-    "--http-header", "User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "--http-header", "Accept=text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "--http-header", "Accept-Language=tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "--http-header", "Sec-Ch-Ua=\"Chromium\";v=\"128\", \"Not=A?Brand\";v=\"24\", \"Google Chrome\";v=\"128\"",
-    "--http-header", "Sec-Ch-Ua-Mobile=?0",
-    "--http-header", "Sec-Ch-Ua-Platform=\"Windows\""
-]
-
 def get_stream_m3u8(source_url):
-    """Streamlink ile ham m3u8 linkini çözer."""
+    """Streamlink ile YouTube canlı yayınının M3U8 bağlantısını çözer."""
     cmd = [
         "streamlink",
         "--stream-url",
-        "--http-timeout", "15",
-        "--retry-streams", "1"
-    ] + COMMON_HEADERS + [source_url, "best"]
+        "--http-timeout", "25",
+        "--retry-streams", "2",
+        source_url,
+        "best"
+    ]
 
     try:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate(timeout=18)
+        stdout, stderr = process.communicate(timeout=30)
+        
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip()
             if direct_url.startswith("http"):
                 return direct_url
+                
         logging.error(f"[STREAMLINK ERROR] {stderr.decode('utf-8', errors='replace')}")
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        logging.error(f"[TIMEOUT] {source_url} zaman aşımına uğradı.")
     except Exception as e:
         logging.error(f"[EXCEPTION] {e}")
     return None
@@ -105,7 +104,6 @@ def run_update_process():
         else:
             logging.warning(f"[FAILED] {slug} çözülemedi.")
         
-        # YouTube ve sunucu yükünü dengede tutmak için kanallar arası 1 saniye bekleme
         time.sleep(1)
 
     LAST_UPDATE_TIME = time.time()
@@ -113,16 +111,15 @@ def run_update_process():
     logging.info("[UPDATE END] Tüm kanallar güncellendi.")
 
 def scheduled_worker():
-    """Uygulama açıldığında çalışır ve her 3 saatte bir süreci tekrarlar."""
-    # İlk çalıştırma (Varsayılan olarak açılışta hemen başlatır)
+    """Render portuna bağlanabilmek için 15sn bekler, ardından 3 saatte bir çalışır."""
+    time.sleep(15)
     run_update_process()
     
     while True:
-        # 3 Saat Bekle (3 * 3600 saniye = 10800 saniye)
-        time.sleep(3 * 3600)
+        time.sleep(3 * 3600)  # 3 Saat
         run_update_process()
 
-# Arka plan thread'ini başlat (Daemon thread sunucu kapandığında otomatik ölür)
+# Arka plan thread'ini başlat
 bg_thread = threading.Thread(target=scheduled_worker, daemon=True)
 bg_thread.start()
 
@@ -130,7 +127,6 @@ bg_thread.start()
 # ENDPOINT'LER
 # -------------------------------------------------------------
 
-# 1. Manuel Başlatma Endpoint'i (GET /start)
 @app.route("/start", methods=["GET"])
 def manual_start():
     if IS_UPDATING:
@@ -139,7 +135,6 @@ def manual_start():
             "message": "Güncelleme süreci zaten arka planda devam ediyor."
         }), 200
 
-    # HTTP isteğini bekletmemek için güncellemeyi ayrı bir thread'de tetikliyoruz
     threading.Thread(target=run_update_process, daemon=True).start()
     
     return jsonify({
@@ -147,7 +142,6 @@ def manual_start():
         "message": "Kanal güncelleme işlemi arka planda başlatıldı."
     }), 200
 
-# 2. Tekil M3U8 Yayını (GET /live/trthaber.m3u8)
 @app.route("/live/<channel_slug>.m3u8", methods=["GET"])
 def get_channel_m3u8(channel_slug):
     clean_slug = channel_slug.lower().replace(".m3u8", "")
@@ -156,13 +150,11 @@ def get_channel_m3u8(channel_slug):
     if not channel:
         return jsonify({"error": f"'{clean_slug}' kanalı bulunamadı."}), 404
 
-    # Önce önbelleğe bak
     cached_url = URL_CACHE.get(clean_slug)
     if cached_url:
         logging.info(f"[REDIRECT-CACHE] -> {clean_slug}")
         return redirect(cached_url, code=302)
 
-    # Önbellekte yoksa anlık çözmeyi dene (Fallback)
     logging.info(f"[CACHE MISS] {clean_slug} anlık çözülüyor...")
     real_m3u8_url = get_stream_m3u8(channel["url"])
 
@@ -172,7 +164,6 @@ def get_channel_m3u8(channel_slug):
 
     return jsonify({"error": f"'{channel['name']}' yayını şu anda çözülemiyor."}), 500
 
-# 3. Tüm Kanalların Durumu ve Önbellek Listesi (GET /channels)
 @app.route("/channels", methods=["GET"])
 def list_channels():
     base_url = request.host_url.rstrip("/")
@@ -192,7 +183,6 @@ def list_channels():
         "channels": response_data
     })
 
-# 4. IPTV / VLC Çalma Listesi (GET /playlist.m3u)
 @app.route("/playlist.m3u", methods=["GET"])
 def playlist():
     base_url = request.host_url.rstrip("/")
@@ -203,7 +193,6 @@ def playlist():
     
     return Response(m3u_content, content_type="audio/x-mpegurl")
 
-# 5. Sağlık ve Önbellek Durumu (GET /health)
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
