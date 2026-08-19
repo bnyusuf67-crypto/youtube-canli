@@ -26,6 +26,7 @@ session.headers.update({
 
 CHANNELS = [
     {"slug": "trthaber", "name": "TRT Haber", "url": "https://www.youtube.com/@trthaber/live"},
+    {"slug": "trthaber", "name": "TRT Haber", "url": "https://www.youtube.com/@trthaber/live"},
     {"slug": "cnnturk", "name": "CNN Turk", "url": "https://www.youtube.com/@cnnturk/live"},
     {"slug": "ntv", "name": "NTV", "url": "https://www.youtube.com/@ntv/live"},
     {"slug": "ahaber", "name": "A Haber", "url": "https://www.youtube.com/@Ahaber/live"},
@@ -57,14 +58,42 @@ URL_CACHE = {}
 IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
-def fetch_video_id(source_url):
-    """Bulut IP engellerine takılmadan Video ID'yi çeker."""
-    # 1. URL içinde zaten varsa
+def resolve_video_id(source_url):
+    """YouTube bulut IP engeline takılmadan videoId tespiti yapar."""
+    # 1. URL'de video ID varsa
     match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
     if match:
         return match.group(1)
 
-    # 2. Doğrudan YouTube HTML İsteği
+    # 2. Piped API üzerinden sorgula (Datacenter IP Korumasız)
+    try:
+        channel_name = source_url.split("@")[-1].replace("/live", "").strip()
+        piped_res = session.get(f"https://pipedapi.kavin.rocks/channels/name/{channel_name}", timeout=4)
+        if piped_res.status_code == 200:
+            data = piped_res.json()
+            # En güncel canlı yayını bul
+            for item in data.get("relatedStreams", []):
+                if item.get("isLive", False):
+                    v_id = item.get("url", "").replace("/watch?v=", "")
+                    if len(v_id) == 11:
+                        logging.info(f"[PIPED SUCCESS] {channel_name} -> {v_id}")
+                        return v_id
+    except Exception as e:
+        logging.warning(f"[PIPED FAIL] {source_url}: {e}")
+
+    # 3. Invidious API Fallback
+    try:
+        channel_name = source_url.split("@")[-1].replace("/live", "").strip()
+        inv_res = session.get(f"https://inv.tux.pizza/api/v1/channels/{channel_name}/search?q=live", timeout=4)
+        if inv_res.status_code == 200:
+            data = inv_res.json()
+            if len(data) > 0 and "videoId" in data[0]:
+                logging.info(f"[INVIDIOUS SUCCESS] {channel_name} -> {data[0]['videoId']}")
+                return data[0]["videoId"]
+    except Exception as e:
+        logging.warning(f"[INVIDIOUS FAIL] {source_url}: {e}")
+
+    # 4. Doğrudan YouTube HTML
     try:
         res = session.get(source_url, timeout=4, allow_redirects=True)
         if res.status_code == 200:
@@ -80,34 +109,15 @@ def fetch_video_id(source_url):
     except Exception:
         pass
 
-    # 3. Bulut IP engeli varsa Invidious API üzerinden video ID'si alma (Açık Kaynak YouTube Proxy)
-    try:
-        channel_name = source_url.split("@")[-1].replace("/live", "")
-        inv_res = session.get(f"https://inv.tux.pizza/api/v1/channels/{channel_name}/search?q=live", timeout=4)
-        if inv_res.status_code == 200:
-            data = inv_res.json()
-            if len(data) > 0 and "videoId" in data[0]:
-                logging.info(f"[PROXY ID SUCCESS] {channel_name} -> {data[0]['videoId']}")
-                return data[0]["videoId"]
-    except Exception as e:
-        logging.warning(f"[PROXY ID FAIL] {source_url}: {e}")
-
     return None
 
 def get_stream_m3u8(source_url):
-    video_id = fetch_video_id(source_url)
+    video_id = resolve_video_id(source_url)
 
-    # --- 1. AŞAMA: InnerTube API (Genişletilmiş İstemci Listesi) ---
+    # --- 1. AŞAMA: InnerTube API (Mobil / VR İstemcileri) ---
     if video_id:
         innertube_url = "https://www.youtube.com/youtubei/v1/player"
         clients = [
-            {
-                "name": "ANDROID_VR",
-                "payload": {
-                    "videoId": video_id,
-                    "context": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.52.18", "deviceMake": "Oculus", "deviceModel": "Quest 3", "hl": "tr", "gl": "TR"}}
-                }
-            },
             {
                 "name": "IOS",
                 "payload": {
@@ -116,10 +126,17 @@ def get_stream_m3u8(source_url):
                 }
             },
             {
-                "name": "TVHTML5",
+                "name": "ANDROID_VR",
                 "payload": {
                     "videoId": video_id,
-                    "context": {"client": {"clientName": "TVHTML5", "clientVersion": "7.20230405.08.01", "hl": "tr", "gl": "TR"}}
+                    "context": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.52.18", "deviceMake": "Oculus", "deviceModel": "Quest 3", "hl": "tr", "gl": "TR"}}
+                }
+            },
+            {
+                "name": "ANDROID_TESTSUITE",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "ANDROID_TESTSUITE", "clientVersion": "1.9", "hl": "tr", "gl": "TR"}}
                 }
             }
         ]
@@ -136,35 +153,36 @@ def get_stream_m3u8(source_url):
             except Exception as e:
                 logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    # --- 2. AŞAMA: yt-dlp (Bulut IP Korumalı Komutlar) ---
-    logging.info(f"[FALLBACK TO YT-DLP] {source_url} deneniyor...")
+    # --- 2. AŞAMA: yt-dlp (Bypass Argumentleri Eklendi) ---
+    target_yt_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else source_url
+    logging.info(f"[FALLBACK TO YT-DLP] {target_yt_url} deneniyor...")
     try:
         ytdlp_cmd = [
             "yt-dlp",
             "-g",
             "-f", "best",
-            "--extractor-args", "youtube:player_client=android_vr,ios",
+            "--extractor-args", "youtube:player_client=ios,android_vr",
             "--socket-timeout", "10",
-            source_url
+            target_yt_url
         ]
         process = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=12)
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip().split('\n')[0]
             if direct_url.startswith("http"):
-                logging.info(f"[YT-DLP SUCCESS] -> {source_url}")
+                logging.info(f"[YT-DLP SUCCESS] -> {target_yt_url}")
                 return direct_url
     except Exception as e:
-        logging.warning(f"[YT-DLP FAIL] {source_url}: {e}")
+        logging.warning(f"[YT-DLP FAIL] {target_yt_url}: {e}")
 
     # --- 3. AŞAMA: Streamlink ---
-    logging.info(f"[FALLBACK TO STREAMLINK] {source_url} deneniyor...")
+    logging.info(f"[FALLBACK TO STREAMLINK] {target_yt_url} deneniyor...")
     try:
         streamlink_cmd = [
             "streamlink",
             "--stream-url",
             "--http-timeout", "15",
-            source_url,
+            target_yt_url,
             "best"
         ]
         process = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -172,10 +190,10 @@ def get_stream_m3u8(source_url):
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip()
             if direct_url.startswith("http"):
-                logging.info(f"[STREAMLINK SUCCESS] -> {source_url}")
+                logging.info(f"[STREAMLINK SUCCESS] -> {target_yt_url}")
                 return direct_url
     except Exception as e:
-        logging.error(f"[STREAMLINK FAIL] {source_url}: {e}")
+        logging.error(f"[STREAMLINK FAIL] {target_yt_url}: {e}")
 
     return None
 
