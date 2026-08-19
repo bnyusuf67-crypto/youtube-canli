@@ -7,7 +7,6 @@ import subprocess
 import requests
 from flask import Flask, jsonify, redirect, request, Response
 
-# UTF-8 Encoding
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 app = Flask(__name__)
@@ -57,77 +56,62 @@ IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
 def resolve_video_id(source_url):
-    """/live sayfasından veya URL'den 11 haneli videoId bilgisini çeker."""
-    # 1. URL içinde zaten 11 haneli ID varsa
+    """Bulut sunucu engelini aşarak videoId çeker."""
     match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
     if match:
         return match.group(1)
 
-    # 2. yt-dlp ile doğrudan ID Çıkarma (--print id)
-    try:
-        cmd = [
-            "yt-dlp",
-            "--print", "id",
-            "--skip-download",
-            "--no-warnings",
-            "--socket-timeout", "5",
-            source_url
-        ]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, _ = process.communicate(timeout=7)
-        if process.returncode == 0:
-            v_id = stdout.decode("utf-8").strip()
-            if len(v_id) == 11 and re.match(r'^[a-zA-Z0-9_-]{11}$', v_id):
-                logging.info(f"[YT-DLP ID EXTRACT SUCCESS] {source_url} -> {v_id}")
-                return v_id
-    except Exception as e:
-        logging.warning(f"[YT-DLP ID EXTRACT FAIL] {source_url}: {e}")
-
-    # 3. Doğrudan YouTube HTML Parse (Açık İsteğe Yedek)
     try:
         res = session.get(source_url, timeout=4, allow_redirects=True)
         if res.status_code == 200:
             patterns = [
                 r'"videoId":"([a-zA-Z0-9_-]{11})"',
                 r'watch\?v=([a-zA-Z0-9_-]{11})',
-                r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
+                r'canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
             ]
             for pat in patterns:
                 m = re.search(pat, res.text)
                 if m:
-                    logging.info(f"[HTML REGEX ID SUCCESS] {source_url} -> {m.group(1)}")
                     return m.group(1)
     except Exception as e:
-        logging.warning(f"[HTML REGEX ID FAIL] {source_url}: {e}")
+        logging.warning(f"[ID FETCH FAIL] {source_url}: {e}")
 
     return None
+
+def is_valid_m3u8(url):
+    """Linkin gerçek bir HLS / M3U8 yayını olup olmadığını doğrular."""
+    if not url or not isinstance(url, str):
+        return False
+    if "youtube.com/watch" in url or "youtu.be" in url:
+        return False
+    return "googlevideo.com" in url or ".m3u8" in url or "manifest" in url
 
 def get_stream_m3u8(source_url):
     video_id = resolve_video_id(source_url)
 
-    # --- 1. AŞAMA: InnerTube API ---
+    # --- 1. AŞAMA: InnerTube API (Embedded & TV Clients) ---
     if video_id:
         innertube_url = "https://www.youtube.com/youtubei/v1/player"
         clients = [
             {
+                "name": "WEB_EMBEDDED_PLAYER",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "WEB_EMBEDDED_PLAYER", "clientVersion": "5.20240308.01.00", "hl": "tr", "gl": "TR"}}
+                }
+            },
+            {
+                "name": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER", "clientVersion": "2.0", "hl": "tr", "gl": "TR"}}
+                }
+            },
+            {
                 "name": "ANDROID_VR",
                 "payload": {
                     "videoId": video_id,
-                    "context": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.52.18", "deviceMake": "Oculus", "deviceModel": "Quest 3", "hl": "tr", "gl": "TR"}}
-                }
-            },
-            {
-                "name": "IOS",
-                "payload": {
-                    "videoId": video_id,
-                    "context": {"client": {"clientName": "IOS", "clientVersion": "19.29.1", "deviceMake": "Apple", "deviceModel": "iPhone16,2", "hl": "tr", "gl": "TR"}}
-                }
-            },
-            {
-                "name": "TVHTML5",
-                "payload": {
-                    "videoId": video_id,
-                    "context": {"client": {"clientName": "TVHTML5", "clientVersion": "7.20230405.08.01", "hl": "tr", "gl": "TR"}}
+                    "context": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.52.18", "hl": "tr", "gl": "TR"}}
                 }
             }
         ]
@@ -138,59 +122,58 @@ def get_stream_m3u8(source_url):
                 if api_res.status_code == 200:
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
-                    if hls_url:
-                        logging.info(f"[INNERTUBE SUCCESS ({target_client['name']})] ID: {video_id} -> {source_url}")
+                    if hls_url and is_valid_m3u8(hls_url):
+                        logging.info(f"[INNERTUBE SUCCESS ({target_client['name']})] -> {video_id}")
                         return hls_url
             except Exception as e:
                 logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    # --- 2. AŞAMA: Full yt-dlp Stream URL alma ---
-    target_yt_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else source_url
-    logging.info(f"[FALLBACK TO YT-DLP STREAM] {target_yt_url} deneniyor...")
+    # --- 2. AŞAMA: yt-dlp (Sıkı URL Filtrelemeli) ---
+    target_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else source_url
+    logging.info(f"[FALLBACK TO YT-DLP] {target_url} deneniyor...")
     try:
         ytdlp_cmd = [
             "yt-dlp",
             "-g",
             "-f", "best",
-            "--extractor-args", "youtube:player_client=ios,android_vr",
+            "--extractor-args", "youtube:player_client=web_embedded,tv",
             "--socket-timeout", "8",
-            target_yt_url
+            target_url
         ]
         process = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=10)
         if process.returncode == 0:
-            direct_url = stdout.decode("utf-8").strip().split('\n')[0]
-            if direct_url.startswith("http"):
-                logging.info(f"[YT-DLP SUCCESS] -> {target_yt_url}")
-                return direct_url
+            lines = stdout.decode("utf-8").strip().split('\n')
+            for line in lines:
+                candidate = line.strip()
+                if is_valid_m3u8(candidate):
+                    logging.info(f"[YT-DLP SUCCESS] -> {candidate[:60]}...")
+                    return candidate
     except Exception as e:
-        logging.warning(f"[YT-DLP FAIL] {target_yt_url}: {e}")
+        logging.warning(f"[YT-DLP FAIL] {target_url}: {e}")
 
     # --- 3. AŞAMA: Streamlink ---
-    logging.info(f"[FALLBACK TO STREAMLINK] {target_yt_url} deneniyor...")
+    logging.info(f"[FALLBACK TO STREAMLINK] {target_url} deneniyor...")
     try:
         streamlink_cmd = [
             "streamlink",
             "--stream-url",
             "--http-timeout", "10",
-            target_yt_url,
+            target_url,
             "best"
         ]
         process = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=12)
         if process.returncode == 0:
-            direct_url = stdout.decode("utf-8").strip()
-            if direct_url.startswith("http"):
-                logging.info(f"[STREAMLINK SUCCESS] -> {target_yt_url}")
-                return direct_url
+            candidate = stdout.decode("utf-8").strip()
+            if is_valid_m3u8(candidate):
+                logging.info(f"[STREAMLINK SUCCESS] -> {candidate[:60]}...")
+                return candidate
     except Exception as e:
-        logging.error(f"[STREAMLINK FAIL] {target_yt_url}: {e}")
+        logging.error(f"[STREAMLINK FAIL] {target_url}: {e}")
 
     return None
 
-# -------------------------------------------------------------
-# ARKA PLAN GÜNCELLEME SÜRECİ
-# -------------------------------------------------------------
 def run_update_process():
     global IS_UPDATING, LAST_UPDATE_TIME
     if IS_UPDATING:
@@ -223,10 +206,6 @@ def scheduled_worker():
 bg_thread = threading.Thread(target=scheduled_worker, daemon=True)
 bg_thread.start()
 
-# -------------------------------------------------------------
-# ENDPOINT'LER
-# -------------------------------------------------------------
-
 @app.route("/start", methods=["GET"])
 def manual_start():
     if IS_UPDATING:
@@ -246,7 +225,7 @@ def get_channel_m3u8(channel_slug):
         return redirect(cached_url, code=302)
 
     real_m3u8_url = get_stream_m3u8(channel["url"])
-    if real_m3u8_url:
+    if real_m3u8_url and is_valid_m3u8(real_m3u8_url):
         URL_CACHE[clean_slug] = real_m3u8_url
         return redirect(real_m3u8_url, code=302)
 
