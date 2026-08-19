@@ -60,41 +60,75 @@ LAST_UPDATE_TIME = 0
 def get_stream_m3u8(source_url):
     """
     Kademeli Çözümleyici:
-    1. Innertube API (0.3s)
-    2. yt-dlp (Yedek - 2-3s)
-    3. streamlink (Yedek - 5-10s)
+    1. Innertube API (ANDROID + WEB Fallback)
+    2. yt-dlp
+    3. streamlink
     """
     
     # --- 1. AŞAMA: Innertube API ---
     try:
-        res = session.get(source_url, timeout=4, allow_redirects=True)
+        # Canlı yayın sayfasından videoId çekme (Çoklu Regex Korumalı)
+        res = session.get(source_url, timeout=5, allow_redirects=True)
+        video_id = None
+        
         if res.status_code == 200:
-            match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', res.text)
-            if not match:
-                match = re.search(r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"', res.text)
+            # YouTube HTML değişikliklerine karşı 3 farklı desen kontrolü
+            patterns = [
+                r'"videoId":"([a-zA-Z0-9_-]{11})"',
+                r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
+                r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
+            ]
+            for pat in patterns:
+                match = re.search(pat, res.text)
+                if match:
+                    video_id = match.group(1)
+                    break
+
+        if video_id:
+            innertube_url = "https://www.youtube.com/youtubei/v1/player"
             
-            if match:
-                video_id = match.group(1)
-                innertube_url = "https://www.youtube.com/youtubei/v1/player"
-                payload = {
-                    "videoId": video_id,
-                    "context": {
-                        "client": {
-                            "clientName": "ANDROID",
-                            "clientVersion": "19.05.36",
-                            "androidSdkVersion": 30,
-                            "hl": "tr",
-                            "gl": "TR"
+            # Denenecek İstemci Kimlikleri (ANDROID önce, olmazsa WEB)
+            clients = [
+                {
+                    "name": "ANDROID",
+                    "payload": {
+                        "videoId": video_id,
+                        "context": {
+                            "client": {
+                                "clientName": "ANDROID",
+                                "clientVersion": "19.05.36",
+                                "androidSdkVersion": 30,
+                                "hl": "tr",
+                                "gl": "TR"
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "WEB",
+                    "payload": {
+                        "videoId": video_id,
+                        "context": {
+                            "client": {
+                                "clientName": "WEB",
+                                "clientVersion": "2.20240308.00.00",
+                                "hl": "tr",
+                                "gl": "TR"
+                            }
                         }
                     }
                 }
-                api_res = session.post(innertube_url, json=payload, timeout=4)
+            ]
+
+            for target_client in clients:
+                api_res = session.post(innertube_url, json=target_client["payload"], timeout=4)
                 if api_res.status_code == 200:
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
                     if hls_url:
-                        logging.info(f"[METHOD 1: INNERTUBE] Başarılı -> {source_url}")
+                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> {source_url}")
                         return hls_url
+
     except Exception as e:
         logging.warning(f"[INNERTUBE FAIL] {source_url}: {e}")
 
