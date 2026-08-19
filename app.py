@@ -17,7 +17,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# HTTP Oturumu (Innertube ve genel istekler için)
+# HTTP Oturumu
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -59,19 +59,17 @@ LAST_UPDATE_TIME = 0
 
 def get_stream_m3u8(source_url):
     """
-    1. Her türlü URL'den (live, watch?v=, youtu.be) videoId tespit eder.
-    2. Doğrudan InnerTube API (ANDROID + WEB) ile M3U8 linkini çeker.
-    3. Başarısız olursa yt-dlp ve streamlink yedeklerine geçer.
+    Kademeli ve Asla Kilitlenmeyen Akış Çözücü:
+    1. InnerTube API (TVHTML5 + ANDROID + WEB)
+    2. yt-dlp (Sözdizimi Korumalı)
+    3. Streamlink (Son Çare)
     """
     video_id = None
 
-    # --- AŞAMA 0: Doğrudan URL Formatlarından Video ID Çıkarma ---
-    # 1. watch?v=VIDEO_ID formatı
+    # --- Video ID Çıkarma Mantığı ---
     watch_match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
     if watch_match:
         video_id = watch_match.group(1)
-    
-    # 2. /live veya Kanal Adresi İse HTML İçinden ID Bulma
     else:
         try:
             res = session.get(source_url, timeout=5, allow_redirects=True)
@@ -87,12 +85,19 @@ def get_stream_m3u8(source_url):
                         video_id = match.group(1)
                         break
         except Exception as e:
-            logging.warning(f"[HTML FETCH FAIL] {source_url}: {e}")
+            logging.warning(f"[ID FETCH FAIL] {source_url}: {e}")
 
     # --- 1. AŞAMA: InnerTube API ---
     if video_id:
         innertube_url = "https://www.youtube.com/youtubei/v1/player"
         clients = [
+            {
+                "name": "TVHTML5",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "TVHTML5", "clientVersion": "7.20230405.08.01", "hl": "tr", "gl": "TR"}}
+                }
+            },
             {
                 "name": "ANDROID",
                 "payload": {
@@ -116,14 +121,21 @@ def get_stream_m3u8(source_url):
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
                     if hls_url:
-                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> ID: {video_id}")
+                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> {source_url}")
                         return hls_url
             except Exception as e:
                 logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    # --- 2. AŞAMA: yt-dlp (Yedek) ---
+    # --- 2. AŞAMA: yt-dlp (InnerTube başarısız veya ID bulunamadıysa Kesinlikle Buraya Geçer) ---
+    logging.info(f"[FALLBACK TO YT-DLP] {source_url} için yt-dlp deneniyor...")
     try:
-        ytdlp_cmd = ["yt-dlp", "-g", "-f", "best", "--socket-timeout", "10", source_url]
+        ytdlp_cmd = [
+            "yt-dlp",
+            "-g",
+            "-f", "best",
+            "--socket-timeout", "10",
+            source_url
+        ]
         process = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=12)
         if process.returncode == 0:
@@ -134,9 +146,16 @@ def get_stream_m3u8(source_url):
     except Exception as e:
         logging.warning(f"[YT-DLP FAIL] {source_url}: {e}")
 
-    # --- 3. AŞAMA: Streamlink (Yedek) ---
+    # --- 3. AŞAMA: Streamlink (Son Çare) ---
+    logging.info(f"[FALLBACK TO STREAMLINK] {source_url} için streamlink deneniyor...")
     try:
-        streamlink_cmd = ["streamlink", "--stream-url", "--http-timeout", "15", source_url, "best"]
+        streamlink_cmd = [
+            "streamlink",
+            "--stream-url",
+            "--http-timeout", "15",
+            source_url,
+            "best"
+        ]
         process = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=18)
         if process.returncode == 0:
@@ -176,12 +195,11 @@ def run_update_process():
     logging.info("[UPDATE END] Tüm kanallar güncellendi.")
 
 def scheduled_worker():
-    time.sleep(5)  # Başlangıçta 5 saniye bekle
+    time.sleep(5)
     run_update_process()
     
     while True:
-        time.sleep(3 * 3600)  # 3 Saat
-        run_update_process()
+        time.sleep(3 * 3600)
 
 bg_thread = threading.Thread(target=scheduled_worker, daemon=True)
 bg_thread.start()
