@@ -56,74 +56,49 @@ URL_CACHE = {}
 IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
-# Çalışan Invidious / Piped API Havuzu
-INVIDIOUS_INSTANCES = [
-    "https://yewtu.be",
-    "https://invidious.nerqv.ps",
-    "https://inv.tux.pizza",
-    "https://invidious.drgns.space"
-]
-
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.mha.fi"
-]
-
 def resolve_video_id(source_url):
-    """Farklı Invidious/Piped API havuzlarını gezerek videoId bulur."""
-    # 1. URL içinde zaten ID varsa
+    """/live sayfasından veya URL'den 11 haneli videoId bilgisini çeker."""
+    # 1. URL içinde zaten 11 haneli ID varsa
     match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
     if match:
         return match.group(1)
 
-    channel_name = source_url.split("@")[-1].replace("/live", "").strip()
-
-    # 2. Invidious API Havuzu (Yedekli)
-    for instance in INVIDIOUS_INSTANCES:
-        try:
-            api_url = f"{instance}/api/v1/channels/{channel_name}/search?q=live"
-            res = session.get(api_url, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                if len(data) > 0 and "videoId" in data[0]:
-                    v_id = data[0]["videoId"]
-                    logging.info(f"[INVIDIOUS SUCCESS ({instance})] {channel_name} -> {v_id}")
-                    return v_id
-        except Exception as e:
-            logging.warning(f"[INVIDIOUS FAIL ({instance})] {channel_name}: {e}")
-
-    # 3. Piped API Havuzu (Yedekli)
-    for instance in PIPED_INSTANCES:
-        try:
-            api_url = f"{instance}/channels/name/{channel_name}"
-            res = session.get(api_url, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                for item in data.get("relatedStreams", []):
-                    if item.get("isLive", False):
-                        v_id = item.get("url", "").replace("/watch?v=", "")
-                        if len(v_id) == 11:
-                            logging.info(f"[PIPED SUCCESS ({instance})] {channel_name} -> {v_id}")
-                            return v_id
-        except Exception as e:
-            logging.warning(f"[PIPED FAIL ({instance})] {channel_name}: {e}")
-
-    # 4. Doğrudan YouTube HTML
+    # 2. yt-dlp ile doğrudan ID Çıkarma (--print id)
     try:
-        res = session.get(source_url, timeout=3, allow_redirects=True)
+        cmd = [
+            "yt-dlp",
+            "--print", "id",
+            "--skip-download",
+            "--no-warnings",
+            "--socket-timeout", "5",
+            source_url
+        ]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = process.communicate(timeout=7)
+        if process.returncode == 0:
+            v_id = stdout.decode("utf-8").strip()
+            if len(v_id) == 11 and re.match(r'^[a-zA-Z0-9_-]{11}$', v_id):
+                logging.info(f"[YT-DLP ID EXTRACT SUCCESS] {source_url} -> {v_id}")
+                return v_id
+    except Exception as e:
+        logging.warning(f"[YT-DLP ID EXTRACT FAIL] {source_url}: {e}")
+
+    # 3. Doğrudan YouTube HTML Parse (Açık İsteğe Yedek)
+    try:
+        res = session.get(source_url, timeout=4, allow_redirects=True)
         if res.status_code == 200:
             patterns = [
                 r'"videoId":"([a-zA-Z0-9_-]{11})"',
-                r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
+                r'watch\?v=([a-zA-Z0-9_-]{11})',
                 r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
             ]
             for pat in patterns:
                 m = re.search(pat, res.text)
                 if m:
+                    logging.info(f"[HTML REGEX ID SUCCESS] {source_url} -> {m.group(1)}")
                     return m.group(1)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning(f"[HTML REGEX ID FAIL] {source_url}: {e}")
 
     return None
 
@@ -164,14 +139,14 @@ def get_stream_m3u8(source_url):
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
                     if hls_url:
-                        logging.info(f"[INNERTUBE SUCCESS ({target_client['name']})] -> {source_url}")
+                        logging.info(f"[INNERTUBE SUCCESS ({target_client['name']})] ID: {video_id} -> {source_url}")
                         return hls_url
             except Exception as e:
                 logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    # --- 2. AŞAMA: yt-dlp ---
+    # --- 2. AŞAMA: Full yt-dlp Stream URL alma ---
     target_yt_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else source_url
-    logging.info(f"[FALLBACK TO YT-DLP] {target_yt_url} deneniyor...")
+    logging.info(f"[FALLBACK TO YT-DLP STREAM] {target_yt_url} deneniyor...")
     try:
         ytdlp_cmd = [
             "yt-dlp",
