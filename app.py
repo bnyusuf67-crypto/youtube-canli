@@ -1,8 +1,10 @@
 import os
-import logging
-import subprocess
-import threading
+import re
 import time
+import logging
+import threading
+import subprocess
+import requests
 from flask import Flask, jsonify, redirect, request, Response
 
 # UTF-8 Encoding
@@ -15,6 +17,13 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+# HTTP Oturumu (Innertube ve genel istekler için)
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8"
+})
+
 # -------------------------------------------------------------
 # BİRLEŞİK KANAL LİSTESİ & GLOBAL CACHE
 # -------------------------------------------------------------
@@ -25,19 +34,16 @@ CHANNELS = [
     {"slug": "ahaber", "name": "A Haber", "url": "https://www.youtube.com/@Ahaber/live"},
     {"slug": "haberturk", "name": "Haber Turk", "url": "https://www.youtube.com/@haberturktv/live"},
     {"slug": "halktv", "name": "Halk TV", "url": "https://www.youtube.com/@Halktvkanali/live"},
-    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/watch?v=ztmY_cCtUl0"},
+    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/@sozcutelevizyonu/live"},
     {"slug": "tgrthaber", "name": "TGRT Haber", "url": "https://www.youtube.com/@tgrthaber/live"},
     {"slug": "flashhaber", "name": "Flash Haber", "url": "https://www.youtube.com/@flashhabertv/live"},
     {"slug": "haberglobal", "name": "Haber Global", "url": "https://www.youtube.com/@haberglobal/live"},
     {"slug": "tv100", "name": "TV 100", "url": "https://www.youtube.com/@tv100/live"},
-    {"slug": "akittv", "name": "Akit TV", "url": "https://www.youtube.com/@akittv/live"},
     {"slug": "bloomberght", "name": "Bloomberg HT", "url": "https://www.youtube.com/@bloomberght/live"},
     {"slug": "benguturk", "name": "Bengu Turk", "url": "https://www.youtube.com/@tvbenguturk/live"},
-    {"slug": "diyanetcocuk", "name": "Diyanet Çocuk", "url": "https://m.youtube.com/watch?v=_VsMIRdOtXI"},
     {"slug": "krttv", "name": "KRT TV", "url": "https://www.youtube.com/@krtcanli/live"},
     {"slug": "ulusalkanal", "name": "Ulusal Kanal", "url": "https://www.youtube.com/@ulusalkanaltv/live"},
     {"slug": "ulketv", "name": "Ulke TV", "url": "https://www.youtube.com/@ulketv/live"},
-    {"slug": "vavtv", "name": "Vav TV", "url": "https://m.youtube.com/@vavtv/live"},
     {"slug": "ekoturk", "name": "Eko Turk", "url": "https://www.youtube.com/@ekoturktv/live"},
     {"slug": "tv24", "name": "24 TV", "url": "https://www.youtube.com/@YirmidortTV/live"},
     {"slug": "aspor", "name": "A Spor", "url": "https://www.youtube.com/@aspor/live"},
@@ -47,52 +53,102 @@ CHANNELS = [
     {"slug": "cnbce", "name": "CNBC-e", "url": "https://www.youtube.com/@cnbce/live"}
 ]
 
-# Önbellek ve Durum Kilidi
 URL_CACHE = {}
 IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
 def get_stream_m3u8(source_url):
-    """Streamlink ile YouTube canlı yayınının M3U8 bağlantısını çözer."""
-    cmd = [
-        "streamlink",
-        "--stream-url",
-        "--http-timeout", "25",
-        "--retry-streams", "2",
-        source_url,
-        "best"
-    ]
-
+    """
+    Kademeli Çözümleyici:
+    1. Innertube API (0.3s)
+    2. yt-dlp (Yedek - 2-3s)
+    3. streamlink (Yedek - 5-10s)
+    """
+    
+    # --- 1. AŞAMA: Innertube API ---
     try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate(timeout=30)
-        
+        res = session.get(source_url, timeout=4, allow_redirects=True)
+        if res.status_code == 200:
+            match = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', res.text)
+            if not match:
+                match = re.search(r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"', res.text)
+            
+            if match:
+                video_id = match.group(1)
+                innertube_url = "https://www.youtube.com/youtubei/v1/player"
+                payload = {
+                    "videoId": video_id,
+                    "context": {
+                        "client": {
+                            "clientName": "ANDROID",
+                            "clientVersion": "19.05.36",
+                            "androidSdkVersion": 30,
+                            "hl": "tr",
+                            "gl": "TR"
+                        }
+                    }
+                }
+                api_res = session.post(innertube_url, json=payload, timeout=4)
+                if api_res.status_code == 200:
+                    data = api_res.json()
+                    hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
+                    if hls_url:
+                        logging.info(f"[METHOD 1: INNERTUBE] Başarılı -> {source_url}")
+                        return hls_url
+    except Exception as e:
+        logging.warning(f"[INNERTUBE FAIL] {source_url}: {e}")
+
+    # --- 2. AŞAMA: yt-dlp ---
+    try:
+        ytdlp_cmd = [
+            "yt-dlp",
+            "-g",
+            "-f", "best",
+            "--socket-timeout", "10",
+            source_url
+        ]
+        process = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = process.communicate(timeout=12)
+        if process.returncode == 0:
+            direct_url = stdout.decode("utf-8").strip().split('\n')[0]
+            if direct_url.startswith("http"):
+                logging.info(f"[METHOD 2: YT-DLP] Başarılı -> {source_url}")
+                return direct_url
+    except Exception as e:
+        logging.warning(f"[YT-DLP FAIL] {source_url}: {e}")
+
+    # --- 3. AŞAMA: Streamlink ---
+    try:
+        streamlink_cmd = [
+            "streamlink",
+            "--stream-url",
+            "--http-timeout", "15",
+            source_url,
+            "best"
+        ]
+        process = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = process.communicate(timeout=18)
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip()
             if direct_url.startswith("http"):
+                logging.info(f"[METHOD 3: STREAMLINK] Başarılı -> {source_url}")
                 return direct_url
-                
-        logging.error(f"[STREAMLINK ERROR] {stderr.decode('utf-8', errors='replace')}")
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        logging.error(f"[TIMEOUT] {source_url} zaman aşımına uğradı.")
     except Exception as e:
-        logging.error(f"[EXCEPTION] {e}")
+        logging.error(f"[STREAMLINK FAIL] {source_url}: {e}")
+
     return None
 
 # -------------------------------------------------------------
 # ARKA PLAN GÜNCELLEME SÜRECİ
 # -------------------------------------------------------------
 def run_update_process():
-    """Tüm kanalları sırayla tarar ve URL_CACHE sözlüğünü günceller."""
     global IS_UPDATING, LAST_UPDATE_TIME
     if IS_UPDATING:
         logging.info("[UPDATE] Zaten devam eden bir güncelleme var, atlanıyor.")
         return
 
     IS_UPDATING = True
-    logging.info("[UPDATE START] Kanal güncelleme süreci başladı...")
+    logging.info("[UPDATE START] Kanal güncellemesi başladı...")
 
     for ch in CHANNELS:
         slug = ch["slug"]
@@ -103,23 +159,19 @@ def run_update_process():
             logging.info(f"[SUCCESS] {slug} -> Önbelleğe eklendi.")
         else:
             logging.warning(f"[FAILED] {slug} çözülemedi.")
-        
-        time.sleep(1)
 
     LAST_UPDATE_TIME = time.time()
     IS_UPDATING = False
     logging.info("[UPDATE END] Tüm kanallar güncellendi.")
 
 def scheduled_worker():
-    """Render portuna bağlanabilmek için 15sn bekler, ardından 3 saatte bir çalışır."""
-    time.sleep(15)
+    time.sleep(5)  # Başlangıçta 5 saniye bekle
     run_update_process()
     
     while True:
         time.sleep(3 * 3600)  # 3 Saat
         run_update_process()
 
-# Arka plan thread'ini başlat
 bg_thread = threading.Thread(target=scheduled_worker, daemon=True)
 bg_thread.start()
 
@@ -130,17 +182,10 @@ bg_thread.start()
 @app.route("/start", methods=["GET"])
 def manual_start():
     if IS_UPDATING:
-        return jsonify({
-            "status": "warning",
-            "message": "Güncelleme süreci zaten arka planda devam ediyor."
-        }), 200
+        return jsonify({"status": "warning", "message": "Güncelleme zaten devam ediyor."}), 200
 
     threading.Thread(target=run_update_process, daemon=True).start()
-    
-    return jsonify({
-        "status": "success",
-        "message": "Kanal güncelleme işlemi arka planda başlatıldı."
-    }), 200
+    return jsonify({"status": "success", "message": "Güncelleme başlatıldı."}), 200
 
 @app.route("/live/<channel_slug>.m3u8", methods=["GET"])
 def get_channel_m3u8(channel_slug):
@@ -152,17 +197,14 @@ def get_channel_m3u8(channel_slug):
 
     cached_url = URL_CACHE.get(clean_slug)
     if cached_url:
-        logging.info(f"[REDIRECT-CACHE] -> {clean_slug}")
         return redirect(cached_url, code=302)
 
-    logging.info(f"[CACHE MISS] {clean_slug} anlık çözülüyor...")
     real_m3u8_url = get_stream_m3u8(channel["url"])
-
     if real_m3u8_url:
         URL_CACHE[clean_slug] = real_m3u8_url
         return redirect(real_m3u8_url, code=302)
 
-    return jsonify({"error": f"'{channel['name']}' yayını şu anda çözülemiyor."}), 500
+    return jsonify({"error": f"'{channel['name']}' yayını çözülemedi."}), 500
 
 @app.route("/channels", methods=["GET"])
 def list_channels():
