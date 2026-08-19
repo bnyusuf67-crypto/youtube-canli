@@ -24,9 +24,6 @@ session.headers.update({
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8"
 })
 
-# -------------------------------------------------------------
-# BİRLEŞİK KANAL LİSTESİ & GLOBAL CACHE
-# -------------------------------------------------------------
 CHANNELS = [
     {"slug": "trthaber", "name": "TRT Haber", "url": "https://www.youtube.com/@trthaber/live"},
     {"slug": "cnnturk", "name": "CNN Turk", "url": "https://www.youtube.com/@cnnturk/live"},
@@ -34,16 +31,19 @@ CHANNELS = [
     {"slug": "ahaber", "name": "A Haber", "url": "https://www.youtube.com/@Ahaber/live"},
     {"slug": "haberturk", "name": "Haber Turk", "url": "https://www.youtube.com/@haberturktv/live"},
     {"slug": "halktv", "name": "Halk TV", "url": "https://www.youtube.com/@Halktvkanali/live"},
-    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/@sozcutelevizyonu/live"},
+    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/watch?v=ztmY_cCtUl0"},
     {"slug": "tgrthaber", "name": "TGRT Haber", "url": "https://www.youtube.com/@tgrthaber/live"},
     {"slug": "flashhaber", "name": "Flash Haber", "url": "https://www.youtube.com/@flashhabertv/live"},
     {"slug": "haberglobal", "name": "Haber Global", "url": "https://www.youtube.com/@haberglobal/live"},
     {"slug": "tv100", "name": "TV 100", "url": "https://www.youtube.com/@tv100/live"},
+    {"slug": "akittv", "name": "Akit TV", "url": "https://www.youtube.com/@akittv/live"},
     {"slug": "bloomberght", "name": "Bloomberg HT", "url": "https://www.youtube.com/@bloomberght/live"},
     {"slug": "benguturk", "name": "Bengu Turk", "url": "https://www.youtube.com/@tvbenguturk/live"},
+    {"slug": "diyanetcocuk", "name": "Diyanet Çocuk", "url": "https://m.youtube.com/watch?v=_VsMIRdOtXI"},
     {"slug": "krttv", "name": "KRT TV", "url": "https://www.youtube.com/@krtcanli/live"},
     {"slug": "ulusalkanal", "name": "Ulusal Kanal", "url": "https://www.youtube.com/@ulusalkanaltv/live"},
     {"slug": "ulketv", "name": "Ulke TV", "url": "https://www.youtube.com/@ulketv/live"},
+    {"slug": "vavtv", "name": "Vav TV", "url": "https://m.youtube.com/@vavtv/live"},
     {"slug": "ekoturk", "name": "Eko Turk", "url": "https://www.youtube.com/@ekoturktv/live"},
     {"slug": "tv24", "name": "24 TV", "url": "https://www.youtube.com/@YirmidortTV/live"},
     {"slug": "aspor", "name": "A Spor", "url": "https://www.youtube.com/@aspor/live"},
@@ -57,59 +57,69 @@ URL_CACHE = {}
 IS_UPDATING = False
 LAST_UPDATE_TIME = 0
 
+def fetch_video_id(source_url):
+    """Bulut IP engellerine takılmadan Video ID'yi çeker."""
+    # 1. URL içinde zaten varsa
+    match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
+    if match:
+        return match.group(1)
+
+    # 2. Doğrudan YouTube HTML İsteği
+    try:
+        res = session.get(source_url, timeout=4, allow_redirects=True)
+        if res.status_code == 200:
+            patterns = [
+                r'"videoId":"([a-zA-Z0-9_-]{11})"',
+                r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
+                r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
+            ]
+            for pat in patterns:
+                m = re.search(pat, res.text)
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+
+    # 3. Bulut IP engeli varsa Invidious API üzerinden video ID'si alma (Açık Kaynak YouTube Proxy)
+    try:
+        channel_name = source_url.split("@")[-1].replace("/live", "")
+        inv_res = session.get(f"https://inv.tux.pizza/api/v1/channels/{channel_name}/search?q=live", timeout=4)
+        if inv_res.status_code == 200:
+            data = inv_res.json()
+            if len(data) > 0 and "videoId" in data[0]:
+                logging.info(f"[PROXY ID SUCCESS] {channel_name} -> {data[0]['videoId']}")
+                return data[0]["videoId"]
+    except Exception as e:
+        logging.warning(f"[PROXY ID FAIL] {source_url}: {e}")
+
+    return None
+
 def get_stream_m3u8(source_url):
-    """
-    Kademeli ve Asla Kilitlenmeyen Akış Çözücü:
-    1. InnerTube API (TVHTML5 + ANDROID + WEB)
-    2. yt-dlp (Sözdizimi Korumalı)
-    3. Streamlink (Son Çare)
-    """
-    video_id = None
+    video_id = fetch_video_id(source_url)
 
-    # --- Video ID Çıkarma Mantığı ---
-    watch_match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
-    if watch_match:
-        video_id = watch_match.group(1)
-    else:
-        try:
-            res = session.get(source_url, timeout=5, allow_redirects=True)
-            if res.status_code == 200:
-                patterns = [
-                    r'"videoId":"([a-zA-Z0-9_-]{11})"',
-                    r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
-                    r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
-                ]
-                for pat in patterns:
-                    match = re.search(pat, res.text)
-                    if match:
-                        video_id = match.group(1)
-                        break
-        except Exception as e:
-            logging.warning(f"[ID FETCH FAIL] {source_url}: {e}")
-
-    # --- 1. AŞAMA: InnerTube API ---
+    # --- 1. AŞAMA: InnerTube API (Genişletilmiş İstemci Listesi) ---
     if video_id:
         innertube_url = "https://www.youtube.com/youtubei/v1/player"
         clients = [
+            {
+                "name": "ANDROID_VR",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "ANDROID_VR", "clientVersion": "1.52.18", "deviceMake": "Oculus", "deviceModel": "Quest 3", "hl": "tr", "gl": "TR"}}
+                }
+            },
+            {
+                "name": "IOS",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "IOS", "clientVersion": "19.29.1", "deviceMake": "Apple", "deviceModel": "iPhone16,2", "hl": "tr", "gl": "TR"}}
+                }
+            },
             {
                 "name": "TVHTML5",
                 "payload": {
                     "videoId": video_id,
                     "context": {"client": {"clientName": "TVHTML5", "clientVersion": "7.20230405.08.01", "hl": "tr", "gl": "TR"}}
-                }
-            },
-            {
-                "name": "ANDROID",
-                "payload": {
-                    "videoId": video_id,
-                    "context": {"client": {"clientName": "ANDROID", "clientVersion": "19.05.36", "androidSdkVersion": 30, "hl": "tr", "gl": "TR"}}
-                }
-            },
-            {
-                "name": "WEB",
-                "payload": {
-                    "videoId": video_id,
-                    "context": {"client": {"clientName": "WEB", "clientVersion": "2.20240308.00.00", "hl": "tr", "gl": "TR"}}
                 }
             }
         ]
@@ -121,18 +131,19 @@ def get_stream_m3u8(source_url):
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
                     if hls_url:
-                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> {source_url}")
+                        logging.info(f"[INNERTUBE SUCCESS ({target_client['name']})] -> {source_url}")
                         return hls_url
             except Exception as e:
                 logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    # --- 2. AŞAMA: yt-dlp (InnerTube başarısız veya ID bulunamadıysa Kesinlikle Buraya Geçer) ---
-    logging.info(f"[FALLBACK TO YT-DLP] {source_url} için yt-dlp deneniyor...")
+    # --- 2. AŞAMA: yt-dlp (Bulut IP Korumalı Komutlar) ---
+    logging.info(f"[FALLBACK TO YT-DLP] {source_url} deneniyor...")
     try:
         ytdlp_cmd = [
             "yt-dlp",
             "-g",
             "-f", "best",
+            "--extractor-args", "youtube:player_client=android_vr,ios",
             "--socket-timeout", "10",
             source_url
         ]
@@ -141,13 +152,13 @@ def get_stream_m3u8(source_url):
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip().split('\n')[0]
             if direct_url.startswith("http"):
-                logging.info(f"[METHOD 2: YT-DLP] Başarılı -> {source_url}")
+                logging.info(f"[YT-DLP SUCCESS] -> {source_url}")
                 return direct_url
     except Exception as e:
         logging.warning(f"[YT-DLP FAIL] {source_url}: {e}")
 
-    # --- 3. AŞAMA: Streamlink (Son Çare) ---
-    logging.info(f"[FALLBACK TO STREAMLINK] {source_url} için streamlink deneniyor...")
+    # --- 3. AŞAMA: Streamlink ---
+    logging.info(f"[FALLBACK TO STREAMLINK] {source_url} deneniyor...")
     try:
         streamlink_cmd = [
             "streamlink",
@@ -161,7 +172,7 @@ def get_stream_m3u8(source_url):
         if process.returncode == 0:
             direct_url = stdout.decode("utf-8").strip()
             if direct_url.startswith("http"):
-                logging.info(f"[METHOD 3: STREAMLINK] Başarılı -> {source_url}")
+                logging.info(f"[STREAMLINK SUCCESS] -> {source_url}")
                 return direct_url
     except Exception as e:
         logging.error(f"[STREAMLINK FAIL] {source_url}: {e}")
@@ -197,7 +208,6 @@ def run_update_process():
 def scheduled_worker():
     time.sleep(5)
     run_update_process()
-    
     while True:
         time.sleep(3 * 3600)
 
@@ -212,14 +222,12 @@ bg_thread.start()
 def manual_start():
     if IS_UPDATING:
         return jsonify({"status": "warning", "message": "Güncelleme zaten devam ediyor."}), 200
-
     threading.Thread(target=run_update_process, daemon=True).start()
     return jsonify({"status": "success", "message": "Güncelleme başlatıldı."}), 200
 
 @app.route("/live/<channel_slug>.m3u8", methods=["GET"])
 def get_channel_m3u8(channel_slug):
     clean_slug = channel_slug.lower().replace(".m3u8", "")
-    
     channel = next((c for c in CHANNELS if c["slug"].lower() == clean_slug), None)
     if not channel:
         return jsonify({"error": f"'{clean_slug}' kanalı bulunamadı."}), 404
@@ -261,7 +269,6 @@ def playlist():
     for ch in CHANNELS:
         stream_link = f"{base_url}/live/{ch['slug']}.m3u8"
         m3u_content += f'#EXTINF:-1 tvg-id="{ch["slug"]}" tvg-name="{ch["name"]}",{ch["name"]}\n{stream_link}\n'
-    
     return Response(m3u_content, content_type="audio/x-mpegurl")
 
 @app.route("/health", methods=["GET"])
