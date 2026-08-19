@@ -14,4 +14,5 @@ COPY . .
 
 ENV PORT=10000
 
-CMD gunicorn -w 2 -k gthread --threads 4 -b 0.0.0.0:$PORT --timeout 60 app:app
+# -w 1 yaparak arka plan thread'inin tek bir süreçte stabil çalışmasını sağlıyoruz
+CMD gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT --timeout 60 app:app
