@@ -59,88 +59,71 @@ LAST_UPDATE_TIME = 0
 
 def get_stream_m3u8(source_url):
     """
-    Kademeli Çözümleyici:
-    1. Innertube API (ANDROID + WEB Fallback)
-    2. yt-dlp
-    3. streamlink
+    1. Her türlü URL'den (live, watch?v=, youtu.be) videoId tespit eder.
+    2. Doğrudan InnerTube API (ANDROID + WEB) ile M3U8 linkini çeker.
+    3. Başarısız olursa yt-dlp ve streamlink yedeklerine geçer.
     """
+    video_id = None
+
+    # --- AŞAMA 0: Doğrudan URL Formatlarından Video ID Çıkarma ---
+    # 1. watch?v=VIDEO_ID formatı
+    watch_match = re.search(r'(?:v=|\/embed\/|\/v\/|youtu\.be\/|\/shorts\/)([a-zA-Z0-9_-]{11})', source_url)
+    if watch_match:
+        video_id = watch_match.group(1)
     
-    # --- 1. AŞAMA: Innertube API ---
-    try:
-        # Canlı yayın sayfasından videoId çekme (Çoklu Regex Korumalı)
-        res = session.get(source_url, timeout=5, allow_redirects=True)
-        video_id = None
-        
-        if res.status_code == 200:
-            # YouTube HTML değişikliklerine karşı 3 farklı desen kontrolü
-            patterns = [
-                r'"videoId":"([a-zA-Z0-9_-]{11})"',
-                r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
-                r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
-            ]
-            for pat in patterns:
-                match = re.search(pat, res.text)
-                if match:
-                    video_id = match.group(1)
-                    break
+    # 2. /live veya Kanal Adresi İse HTML İçinden ID Bulma
+    else:
+        try:
+            res = session.get(source_url, timeout=5, allow_redirects=True)
+            if res.status_code == 200:
+                patterns = [
+                    r'"videoId":"([a-zA-Z0-9_-]{11})"',
+                    r'href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"',
+                    r'link rel="canonical" href="https://www.youtube.com/watch\?v=([a-zA-Z0-9_-]{11})"'
+                ]
+                for pat in patterns:
+                    match = re.search(pat, res.text)
+                    if match:
+                        video_id = match.group(1)
+                        break
+        except Exception as e:
+            logging.warning(f"[HTML FETCH FAIL] {source_url}: {e}")
 
-        if video_id:
-            innertube_url = "https://www.youtube.com/youtubei/v1/player"
-            
-            # Denenecek İstemci Kimlikleri (ANDROID önce, olmazsa WEB)
-            clients = [
-                {
-                    "name": "ANDROID",
-                    "payload": {
-                        "videoId": video_id,
-                        "context": {
-                            "client": {
-                                "clientName": "ANDROID",
-                                "clientVersion": "19.05.36",
-                                "androidSdkVersion": 30,
-                                "hl": "tr",
-                                "gl": "TR"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "WEB",
-                    "payload": {
-                        "videoId": video_id,
-                        "context": {
-                            "client": {
-                                "clientName": "WEB",
-                                "clientVersion": "2.20240308.00.00",
-                                "hl": "tr",
-                                "gl": "TR"
-                            }
-                        }
-                    }
+    # --- 1. AŞAMA: InnerTube API ---
+    if video_id:
+        innertube_url = "https://www.youtube.com/youtubei/v1/player"
+        clients = [
+            {
+                "name": "ANDROID",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "ANDROID", "clientVersion": "19.05.36", "androidSdkVersion": 30, "hl": "tr", "gl": "TR"}}
                 }
-            ]
+            },
+            {
+                "name": "WEB",
+                "payload": {
+                    "videoId": video_id,
+                    "context": {"client": {"clientName": "WEB", "clientVersion": "2.20240308.00.00", "hl": "tr", "gl": "TR"}}
+                }
+            }
+        ]
 
-            for target_client in clients:
+        for target_client in clients:
+            try:
                 api_res = session.post(innertube_url, json=target_client["payload"], timeout=4)
                 if api_res.status_code == 200:
                     data = api_res.json()
                     hls_url = data.get("streamingData", {}).get("hlsManifestUrl")
                     if hls_url:
-                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> {source_url}")
+                        logging.info(f"[METHOD 1: INNERTUBE ({target_client['name']})] Başarılı -> ID: {video_id}")
                         return hls_url
+            except Exception as e:
+                logging.warning(f"[INNERTUBE {target_client['name']} FAIL] {e}")
 
-    except Exception as e:
-        logging.warning(f"[INNERTUBE FAIL] {source_url}: {e}")
-
-    # --- 2. AŞAMA: yt-dlp ---
+    # --- 2. AŞAMA: yt-dlp (Yedek) ---
     try:
-        ytdlp_cmd = [
-            "yt-dlp",
-            "-g",
-            "-f", "best",
-            "--socket-timeout", "10",
-            source_url
-        ]
+        ytdlp_cmd = ["yt-dlp", "-g", "-f", "best", "--socket-timeout", "10", source_url]
         process = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=12)
         if process.returncode == 0:
@@ -151,15 +134,9 @@ def get_stream_m3u8(source_url):
     except Exception as e:
         logging.warning(f"[YT-DLP FAIL] {source_url}: {e}")
 
-    # --- 3. AŞAMA: Streamlink ---
+    # --- 3. AŞAMA: Streamlink (Yedek) ---
     try:
-        streamlink_cmd = [
-            "streamlink",
-            "--stream-url",
-            "--http-timeout", "15",
-            source_url,
-            "best"
-        ]
+        streamlink_cmd = ["streamlink", "--stream-url", "--http-timeout", "15", source_url, "best"]
         process = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = process.communicate(timeout=18)
         if process.returncode == 0:
