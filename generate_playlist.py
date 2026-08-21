@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import re
 import json
 import urllib.request
-import urllib.parse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,7 +14,9 @@ USER_AGENT_PLAYLIST = "VLC/3.0.20"
 TIMEOUT = 8
 MAX_WORKERS = 8
 
-INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+# Varsayılan (Yedek) API Anahtarı
+DEFAULT_INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+INNERTUBE_KEY = None
 
 kanallar = [
     {"slug": "trthaber", "name": "TRT Haber", "handle": "@trthaber"},
@@ -35,9 +37,34 @@ kanallar = [
     {"slug": "cnbce", "name": "CNBC-e", "handle": "@CNBCeTurkiye"}
 ]
 
-def inner_tube_post(endpoint, payload, client_type="WEB"):
+def fetch_innertube_api_key():
+    """
+    YouTube ana sayfasını yükleyip HTML içindeki güncel INNERTUBE_API_KEY değerini çeker.
+    """
+    url = "https://www.youtube.com"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+            # "INNERTUBE_API_KEY":"AIzaSy..." desenini ara
+            match = re.search(r'["\']INNERTUBE_API_KEY["\']\s*:\s*["\']([^"\'\s]+)["\']', html)
+            if match:
+                key = match.group(1)
+                print(f"🔑 Güncel InnerTube API Key webden çekildi: {key[:10]}...")
+                return key
+    except Exception as e:
+        print(f"⚠️ API Key çekilirken hata oluştu: {e}")
+    
+    print("⚠️ Webden API Key alınamadı, yedek varsayılan key kullanılıyor.")
+    return DEFAULT_INNERTUBE_KEY
+
+def inner_tube_post(endpoint, payload, api_key, client_type="WEB"):
     """InnerTube API'sine doğrudan JSON POST isteği gönderir."""
-    url = f"https://www.youtube.com/youtubei/v1/{endpoint}?key={INNERTUBE_KEY}"
+    url = f"https://www.youtube.com/youtubei/v1/{endpoint}?key={api_key}"
     
     if client_type == "WEB":
         context = {
@@ -71,33 +98,27 @@ def inner_tube_post(endpoint, payload, client_type="WEB"):
     with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
-def fetch_live_video_id(handle):
-    """
-    Canlı yayının videoId değerini dinamik olarak YouTube istemci sorguları ile bulur.
-    Yöntem 1: resolve_url
-    Yöntem 2: WEB Browse API (Emin olmak için fallback)
-    """
-    # 1. YÖNTEM: WEB resolve_url
+def fetch_live_video_id(handle, api_key):
+    """Canlı yayının videoId değerini dinamik InnerTube istekleri ile çözer."""
+    # 1. YÖNTEM: InnerTube resolve_url API
     try:
         res = inner_tube_post("navigation/resolve_url", {
             "url": f"https://www.youtube.com/{handle}/live"
-        }, client_type="WEB")
+        }, api_key=api_key, client_type="WEB")
         
         endpoint = res.get("endpoint", {})
         
-        # Doğrudan watchEndpoint geldiyse videoId mevcuttur
         v_id = endpoint.get("watchEndpoint", {}).get("videoId")
         if v_id:
             return v_id
             
-        # CommandMetadata yönlendirmesinde v= var mı kontrolü
         cmd_url = endpoint.get("commandMetadata", {}).get("webCommandMetadata", {}).get("url", "")
         if "v=" in cmd_url:
             return cmd_url.split("v=")[1].split("&")[0]
     except Exception:
         pass
 
-    # 2. YÖNTEM: HTML Headless HTTP Redirect (Yönlendirilen Canonical URL'den bulma)
+    # 2. YÖNTEM: Headless Redirect URL Kontrolü
     try:
         req = urllib.request.Request(
             f"https://www.youtube.com/{handle}/live",
@@ -114,19 +135,17 @@ def fetch_live_video_id(handle):
     return None
 
 def fetch_live_stream(kanal):
-    """Dynamic ID + InnerTube HLS Manifest akış adresi alma mantığı."""
+    """Kanal için güncel videoId ve M3U8 adresini alır."""
     try:
-        # Dinamik Video ID alma
-        video_id = fetch_live_video_id(kanal["handle"])
+        video_id = fetch_live_video_id(kanal["handle"], INNERTUBE_KEY)
         if not video_id:
             return None
 
-        # Player API ile Akış URL'si Alma
         res_player = inner_tube_post("player", {
             "videoId": video_id,
             "contentCheckOk": True,
             "racyCheckOk": True
-        }, client_type="ANDROID")
+        }, api_key=INNERTUBE_KEY, client_type="ANDROID")
 
         manifest_url = res_player.get("streamingData", {}).get("hlsManifestUrl")
         if manifest_url:
@@ -137,8 +156,13 @@ def fetch_live_stream(kanal):
     return None
 
 def main():
+    global INNERTUBE_KEY
     os.makedirs(STREAMS_DIR, exist_ok=True)
-    print(f"🚀 Dinamik Web Parametre Bulucu Başlatıldı ({len(kanallar)} kanal)...\n")
+    
+    print("🌐 YouTube dinamik yapılandırması yükleniyor...")
+    INNERTUBE_KEY = fetch_innertube_api_key()
+    
+    print(f"\n🚀 Canlı Yayın Taraması Başlatıldı ({len(kanallar)} kanal)...\n")
     
     baslangic = datetime.now()
     basarili_kanallar = []
