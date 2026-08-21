@@ -1,5 +1,4 @@
 Flask
-streamlink
 requests
+streamlink
 apscheduler
-gunicorn
