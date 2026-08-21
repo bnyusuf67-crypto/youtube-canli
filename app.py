@@ -9,11 +9,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # -------------------- AYARLAR & TIMEOUT DEĞERLERİ --------------------
 BASE_STREAM_DIR = "hls_stream"
-USER_AGENT = "VLC/3.0.20"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 PROXY_API_TIMEOUT_MS = 2000    # ProxyScrape API max yanıt süresi (ms)
-PROXY_TEST_TIMEOUT = 1.5       # Seçilen proxy'nin YouTube test süresi (sn)
-STREAMLINK_TIMEOUT = "3"       # Streamlink'in takılı kalma sınırı (sn)
+PROXY_TEST_TIMEOUT = 1.0       # Seçilen proxy'nin YouTube test süresi (sn)
+STREAMLINK_TIMEOUT = "2"       # Streamlink'in takılı kalma sınırı (sn)
 FLASK_FILE_WAIT_TIMEOUT = 16.0 # Flask'in master.m3u8 bekletme toleransı (sn)
 INACTIVE_TIMEOUT = 180         # 180 saniye (3 dk) izlenmeyen yayını kapat
 
@@ -58,7 +58,7 @@ def get_working_tr_proxy():
     global CURRENT_WORKING_PROXY
     api = f"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout={PROXY_API_TIMEOUT_MS}&country=TR&ssl=all&anonymity=all"
     try:
-        resp = requests.get(api, timeout=3)
+        resp = requests.get(api, timeout=2)
         if resp.status_code == 200:
             for proxy in resp.text.splitlines():
                 if proxy.strip():
@@ -69,7 +69,7 @@ def get_working_tr_proxy():
                         return
                     except: continue
     except: pass
-    print("⚠️ Çalışan/Hızlı TR Proxy bulunamadı. Doğrudan bağlantı deneniyor.")
+    print("⚠️ Çalışan/Hızlı TR Proxy bulunamadı. Doğrudan bağlantı kullanılıyor.")
     CURRENT_WORKING_PROXY = None
 
 # -------------------- YARDIMCI VE TEMİZLİK FONKSİYONLARI --------------------
@@ -111,19 +111,20 @@ def start_stream(kanal):
         try: os.remove(master_path)
         except: pass
 
-    # --- SENARYO 1: DOĞRUDAN MPEG-TS ---
+    # --- SENARYO 1: DOĞRUDAN MPEG-TS (Aşırı Hızlı Analiz Ayarları) ---
     if kanal.get("type") == "direct_ts":
         cmd_ffmpeg = [
             "ffmpeg", "-y",
             "-reconnect", "1",
             "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-probesize", "5000000",
-            "-analyzeduration", "5000000",
+            "-reconnect_delay_max", "2",
+            "-fflags", "nobuffer+fastseek",
+            "-probesize", "32768",            # 32KB Analiz (Saniyeler içinde başlar)
+            "-analyzeduration", "0",          # Analiz beklemesini sıfırladık
             "-i", kanal["url"],
             "-c", "copy",
             "-f", "hls",
-            "-hls_time", "3",
+            "-hls_time", "2",                 # 2 saniyelik hızlı segmentler
             "-hls_list_size", "5",
             "-hls_flags", "delete_segments+append_list+omit_endlist",
             master_path
@@ -131,16 +132,19 @@ def start_stream(kanal):
         p_ffmpeg = subprocess.Popen(cmd_ffmpeg, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         active_processes[slug] = [p_ffmpeg]
 
-    # --- SENARYO 2: YOUTUBE ---
+    # --- SENARYO 2: YOUTUBE (Gelişmiş Streamlink ve FFmpeg Süreci) ---
     else:
         cmd_stream = [
             "streamlink", "--stdout",
             "--hls-live-edge", "1",
             "--stream-segment-threads", "3",
             "--retry-max", "1",
+            "--retry-streams", "1",
             "--http-timeout", STREAMLINK_TIMEOUT,
             "--http-header", f"User-Agent={USER_AGENT}"
         ]
+        
+        # Proxy sadece geçerliyse eklenir
         if CURRENT_WORKING_PROXY:
             cmd_stream.extend(["--http-proxy", CURRENT_WORKING_PROXY])
             
