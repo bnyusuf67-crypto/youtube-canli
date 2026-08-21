@@ -20,13 +20,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: fake-useragent Kur
-        run: |
-          python -m pip install --upgrade pip
-          npm init -y
-          npm install youtube-po-token-generator
-          pip install fake-useragent
-
       - name: Playlist Oluştur
         run: python generate_playlist.py
 
