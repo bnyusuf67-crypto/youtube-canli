@@ -15,7 +15,7 @@ USER_AGENT = "VLC/3.0.20"
 os.makedirs(BASE_STREAM_DIR, exist_ok=True)
 app = Flask(__name__)
 
-# -------------------- KANAL LİSTESİ (23 KANAL) --------------------
+# -------------------- KANAL LİSTESİ --------------------
 kanallar = [
     {"slug": "trthaber", "name": "TRT Haber", "url": "https://www.youtube.com/@trthaber/live"},
     {"slug": "cnnturk", "name": "CNN Turk", "url": "https://www.youtube.com/@cnnturk/live"},
@@ -23,16 +23,20 @@ kanallar = [
     {"slug": "ahaber", "name": "A Haber", "url": "https://www.youtube.com/@Ahaber/live"},
     {"slug": "haberturk", "name": "Haber Turk", "url": "https://www.youtube.com/@haberturktv/live"},
     {"slug": "halktv", "name": "Halk TV", "url": "https://www.youtube.com/@Halktvkanali/live"},
-    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/@sozcutelevizyonu/live"},
+    {"slug": "sozcutelevizyonu", "name": "Sozcu TV", "url": "https://www.youtube.com/watch?v=ztmY_cCtUl0"},
     {"slug": "tgrthaber", "name": "TGRT Haber", "url": "https://www.youtube.com/@tgrthaber/live"},
     {"slug": "flashhaber", "name": "Flash Haber", "url": "https://www.youtube.com/@flashhabertv/live"},
     {"slug": "haberglobal", "name": "Haber Global", "url": "https://www.youtube.com/@haberglobal/live"},
     {"slug": "tv100", "name": "TV 100", "url": "https://www.youtube.com/@tv100/live"},
+    {"slug": "akittv", "name": "Akit TV", "url": "https://www.youtube.com/@akittv/live"},
     {"slug": "bloomberght", "name": "Bloomberg HT", "url": "https://www.youtube.com/@bloomberght/live"},
     {"slug": "benguturk", "name": "Bengu Turk", "url": "https://www.youtube.com/@tvbenguturk/live"},
+    {"slug": "diyanetcocuk", "name": "Diyanet Çocuk", "url": "https://www.youtube.com/watch?v=_VsMIRdOtXI"},
     {"slug": "krttv", "name": "KRT TV", "url": "https://www.youtube.com/@krtcanli/live"},
     {"slug": "ulusalkanal", "name": "Ulusal Kanal", "url": "https://www.youtube.com/@ulusalkanaltv/live"},
     {"slug": "ulketv", "name": "Ulke TV", "url": "https://www.youtube.com/@ulketv/live"},
+    {"slug": "vavtv", "name": "Vav TV", "url": "https://www.youtube.com/@vavtv/live"},
+    {"slug": "bizimevtv", "name": "Bizimev TV", "url": "https://www.youtube.com/@bizimevtv2000/live"},
     {"slug": "ekoturk", "name": "Eko Turk", "url": "https://www.youtube.com/@ekoturktv/live"},
     {"slug": "tv24", "name": "24 TV", "url": "https://www.youtube.com/@YirmidortTV/live"},
     {"slug": "aspor", "name": "A Spor", "url": "https://www.youtube.com/@aspor/live"},
