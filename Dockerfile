@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# FFmpeg ve gerekli sistem araçlarını yüklüyoruz
+# FFmpeg ve curl kurulumu
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
@@ -8,13 +8,14 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Bağımlılıkları kopyala ve yükle
+# Bağımlılıkları yükleme
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Proje dosyalarını kopyala
+# Proje dosyalarını aktarma
 COPY . .
 
-# Uygulamayı çalıştır
+# Flask portu
 EXPOSE 10000
+
 CMD ["python", "app.py"]
