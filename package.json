@@ -1,0 +1,23 @@
+{
+  "name": "youtube-canli",
+  "version": "1.0.0",
+  "description": "Youtube üzerinde canlı yayın yapan kanalların adreslerini m3u8 formatına çevirir.",
+  "main": "get_po_token.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bnyusuf67-crypto/youtube-canli.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bnyusuf67-crypto/youtube-canli/issues"
+  },
+  "homepage": "https://github.com/bnyusuf67-crypto/youtube-canli#readme",
+  "dependencies": {
+    "youtube-po-token-generator": "^0.6.0"
+  }
+}
