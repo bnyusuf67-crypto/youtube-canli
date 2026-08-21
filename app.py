@@ -14,7 +14,8 @@ USER_AGENT = "VLC/3.0.20"
 PROXY_API_TIMEOUT_MS = 2000    # ProxyScrape API max yanıt süresi (ms)
 PROXY_TEST_TIMEOUT = 1.5       # Seçilen proxy'nin YouTube test süresi (sn)
 STREAMLINK_TIMEOUT = "3"       # Streamlink'in takılı kalma sınırı (sn)
-FLASK_FILE_WAIT_TIMEOUT = 6.0  # Flask'in master.m3u8 bekletme toleransı (sn)
+FLASK_FILE_WAIT_TIMEOUT = 16.0 # Flask'in master.m3u8 bekletme toleransı (sn)
+INACTIVE_TIMEOUT = 180         # 180 saniye (3 dk) izlenmeyen yayını kapat
 
 os.makedirs(BASE_STREAM_DIR, exist_ok=True)
 app = Flask(__name__)
@@ -49,6 +50,7 @@ kanallar = [
 ]
 
 active_processes = {}
+last_access_times = {}
 CURRENT_WORKING_PROXY = None
 
 # -------------------- PROXY İŞLEMLERİ --------------------
@@ -70,7 +72,7 @@ def get_working_tr_proxy():
     print("⚠️ Çalışan/Hızlı TR Proxy bulunamadı. Doğrudan bağlantı deneniyor.")
     CURRENT_WORKING_PROXY = None
 
-# -------------------- YARDIMCI FONKSİYONLAR --------------------
+# -------------------- YARDIMCI VE TEMİZLİK FONKSİYONLARI --------------------
 def wait_for_file(filepath, timeout):
     start = time.time()
     while time.time() - start < timeout:
@@ -86,6 +88,17 @@ def stop_channel_process(slug):
             try: p.kill()
             except: pass
         del active_processes[slug]
+        print(f"🛑 [{slug}] Süreçleri durduruldu.")
+
+def auto_cleaner():
+    """İzlenmeyen (pasif) kanalları tespit edip kapatır."""
+    now = time.time()
+    active_slugs = list(active_processes.keys())
+    for slug in active_slugs:
+        last_time = last_access_times.get(slug, 0)
+        if now - last_time > INACTIVE_TIMEOUT:
+            print(f"🧹 Auto-Cleaner: [{slug}] {INACTIVE_TIMEOUT}s boyunca izlenmedi, kapatılıyor...")
+            stop_channel_process(slug)
 
 def start_stream(kanal):
     slug = kanal["slug"]
@@ -98,7 +111,7 @@ def start_stream(kanal):
         try: os.remove(master_path)
         except: pass
 
-    # --- SENARYO 1: DOĞRUDAN MPEG-TS (Kararlı Buffer & Doğrulama Ayarları) ---
+    # --- SENARYO 1: DOĞRUDAN MPEG-TS ---
     if kanal.get("type") == "direct_ts":
         cmd_ffmpeg = [
             "ffmpeg", "-y",
@@ -118,7 +131,7 @@ def start_stream(kanal):
         p_ffmpeg = subprocess.Popen(cmd_ffmpeg, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         active_processes[slug] = [p_ffmpeg]
 
-    # --- SENARYO 2: YOUTUBE (Streamlink + FFmpeg Süreci) ---
+    # --- SENARYO 2: YOUTUBE ---
     else:
         cmd_stream = [
             "streamlink", "--stdout",
@@ -163,18 +176,23 @@ def handle_manifest(slug):
     kanal = next((k for k in kanallar if k["slug"] == slug), None)
     if not kanal: return "Kanal Bulunamadı", 404
 
+    # Kanal erişim zamanını güncelle
+    last_access_times[slug] = time.time()
+
     # Yayın çalışmıyorsa veya kapandıysa başlat
     if slug not in active_processes or active_processes[slug][-1].poll() is not None:
         start_stream(kanal)
     
-    # 6 saniye içinde .m3u8 dosyasının yazılmasını bekle
+    # 16 saniye içinde .m3u8 dosyasının yazılmasını bekle
     if wait_for_file(os.path.join(BASE_STREAM_DIR, slug, "master.m3u8"), timeout=FLASK_FILE_WAIT_TIMEOUT):
         return send_from_directory(os.path.join(BASE_STREAM_DIR, slug), "master.m3u8")
     
-    return "Yayın Başlatılamadı (Timeout)", 500
+    return "Yayın Başlatılamadı (16s Timeout)", 500
 
 @app.route("/stream/<slug>/<filename>")
 def stream_ts(slug, filename):
+    # Segment çağrılarında da kanalı aktif tut
+    last_access_times[slug] = time.time()
     return send_from_directory(os.path.join(BASE_STREAM_DIR, slug), filename)
 
 @app.route("/playlist.m3u")
@@ -189,6 +207,9 @@ def playlist():
 if __name__ == "__main__":
     get_working_tr_proxy()
     scheduler = BackgroundScheduler()
+    # 2 saatte bir proxy yenile
     scheduler.add_job(get_working_tr_proxy, "interval", hours=2)
+    # 30 saniyede bir pasif kanalları kontrol et ve temizle
+    scheduler.add_job(auto_cleaner, "interval", seconds=30)
     scheduler.start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
