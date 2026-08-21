@@ -8,14 +8,21 @@ import urllib.request
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+# fake-useragent kontrolü ve yüklenmesi
+try:
+    from fake_useragent import UserAgent
+    ua = UserAgent()
+except ImportError:
+    print("❌ 'fake-useragent' kütüphanesi bulunamadı! Yüklemek için: pip install fake-useragent")
+    sys.exit(1)
+
 # -------------------- AYARLAR --------------------
 STREAMS_DIR = "streams"
 PLAYLIST_FILE = "playlist.m3u"
-USER_AGENT = "VLC/3.0.20"
-TIMEOUT = 5             # Saniye bazında istek zaman aşımı
-MAX_WORKERS = 10        # Eşzamanlı taranacak kanal sayısı
+USER_AGENT_PLAYLIST = "VLC/3.0.20"  # Playlist içi varsayılan oynatıcı UA
+TIMEOUT = 6
+MAX_WORKERS = 8
 
-# Sadece kanalın @kullanıcı adını yazmanız yeterlidir
 kanallar = [
     {"slug": "trthaber", "name": "TRT Haber", "handle": "@trthaber"},
     {"slug": "cnnturk", "name": "CNN Turk", "handle": "@cnnturk"},
@@ -35,84 +42,76 @@ kanallar = [
     {"slug": "cnbce", "name": "CNBC-e", "handle": "@CNBCeTurkiye"}
 ]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8"
-}
-
-def extract_channel_id(handle):
-    """Kanalın @kullaniciadi sayfasından UC... ile başlayan resmi Kanal ID'sini çıkarır."""
-    url = f"https://www.youtube.com/{handle}"
-    try:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-            html = response.read().decode('utf-8')
-            
-            # YouTube HTML kaynak kodundaki channelId değerini yakala
-            match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', html)
-            if match:
-                return match.group(1)
-            
-            # Alternatif meta etiket taraması
-            meta_match = re.search(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"', html)
-            if meta_match:
-                return meta_match.group(1)
-    except Exception:
-        pass
-    return None
+def get_dynamic_headers():
+    """Her istek için dinamik ve rastgele User-Agent başlığı üretir."""
+    return {
+        "User-Agent": ua.random,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cookie": "CONSENT=YES+cb; SOCS=CAI"
+    }
 
 def fetch_live_stream(kanal):
-    """Kanal ID'sini çıkarır ve Embed API üzerinden HLS Manifest (.m3u8) linkini alır."""
-    # 1. Aşama: Kanal ID'sini otomatik tespit et
-    channel_id = extract_channel_id(kanal["handle"])
+    """Canlı yayın HLS Manifest URL'sini dinamik User-Agent ile çeker."""
+    live_url = f"https://www.youtube.com/{kanal['handle']}/live"
+    headers = get_dynamic_headers()
     
-    if not channel_id:
-        return None
-        
-    kanal["channel_id"] = channel_id
-
-    # 2. Aşama: Bulunan Kanal ID ile Embed API'den HLS URL'sini çek
-    embed_url = f"https://www.youtube.com/embed/live_stream?channel={channel_id}"
     try:
-        req = urllib.request.Request(embed_url, headers=HEADERS)
+        req = urllib.request.Request(live_url, headers=headers)
         with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-            html = response.read().decode('utf-8')
+            html = response.read().decode('utf-8', errors='ignore')
 
-            # Embed sayfasındaki hlsManifestUrl parametresini süz
+            # 1. Yöntem: Direct Regex Taraması
             match = re.search(r'"hlsManifestUrl":"([^"]+)"', html)
             if match:
                 manifest_url = match.group(1).replace(r'\/', '/')
                 kanal["manifest_url"] = manifest_url
                 return kanal
+
+            # 2. Yöntem: ChannelID bulup Embed Player üzerinden deneme
+            channel_match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', html)
+            if channel_match:
+                channel_id = channel_match.group(1)
+                embed_url = f"https://www.youtube.com/embed/live_stream?channel={channel_id}"
+                embed_req = urllib.request.Request(embed_url, headers=get_dynamic_headers())
+                
+                with urllib.request.urlopen(embed_req, timeout=TIMEOUT) as embed_res:
+                    embed_html = embed_res.read().decode('utf-8', errors='ignore')
+                    embed_match = re.search(r'"hlsManifestUrl":"([^"]+)"', embed_html)
+                    if embed_match:
+                        kanal["manifest_url"] = embed_match.group(1).replace(r'\/', '/')
+                        return kanal
+
     except Exception:
         pass
     return None
 
 def main():
     os.makedirs(STREAMS_DIR, exist_ok=True)
-    print(f"🚀 Kanal ID Çıkarıcı & Embed Parser çalışıyor ({len(kanallar)} kanal)...\n")
+    print(f"🚀 Dinamik User-Agent ile Canlı Yayın Taraması ({len(kanallar)} kanal)...\n")
     
     baslangic = datetime.now()
     basarili_kanallar = []
 
-    # Paralel istekler
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = executor.map(fetch_live_stream, kanallar)
         for res in results:
             if res:
                 basarili_kanallar.append(res)
-                print(f"✅ {res['name']} (ID: {res['channel_id']}) alındı.")
+                print(f"✅ {res['name']} alındı.")
             else:
-                print("❌ Bir kanal için ID veya yayın linki alınamadı.")
+                print(f"❌ Kanal alınamadı.")
 
     # M3U Dosyalarını Yaz
     ana_m3u = "#EXTM3U\n"
     for kanal in basarili_kanallar:
+        # Tekil M3U8 Dosyası
         filepath = os.path.join(STREAMS_DIR, f"{kanal['slug']}.m3u8")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=7680000\n{kanal['manifest_url']}\n")
 
-        ana_m3u += f'#EXTINF:-1 tvg-name="{kanal["name"]}" group-title="Canlı" http-user-agent="{USER_AGENT}",{kanal["name"]}\n{kanal["manifest_url"]}\n'
+        # Toplu Playlist
+        ana_m3u += f'#EXTINF:-1 tvg-name="{kanal["name"]}" group-title="Canlı" http-user-agent="{USER_AGENT_PLAYLIST}",{kanal["name"]}\n{kanal["manifest_url"]}\n'
 
     with open(PLAYLIST_FILE, "w", encoding="utf-8") as f:
         f.write(ana_m3u)
