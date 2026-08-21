@@ -1,0 +1,5 @@
+Flask
+streamlink
+requests
+apscheduler
+gunicorn
