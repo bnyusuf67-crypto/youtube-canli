@@ -37,7 +37,7 @@ kanallar = [
 STREAMS_DIR = "streams"
 PLAYLIST_FILE = "playlist.m3u"
 USER_AGENT = "VLC/3.0.20"
-YT_DLP_TIMEOUT = 60  # saniye
+YT_DLP_TIMEOUT = 150  # saniye
 
 YT_DLP = shutil.which("yt-dlp")
 if not YT_DLP:
