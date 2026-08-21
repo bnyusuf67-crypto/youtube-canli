@@ -14,7 +14,7 @@ USER_AGENT = "VLC/3.0.20"
 PROXY_API_TIMEOUT_MS = 2000    # ProxyScrape API max yanıt süresi (ms)
 PROXY_TEST_TIMEOUT = 1.5       # Seçilen proxy'nin YouTube test süresi (sn)
 STREAMLINK_TIMEOUT = "3"       # Streamlink'in takılı kalma sınırı (sn)
-FLASK_FILE_WAIT_TIMEOUT = 5.0  # Flask'in master.m3u8 bekletme süresi (sn)
+FLASK_FILE_WAIT_TIMEOUT = 6.0  # Flask'in master.m3u8 bekletme toleransı (sn)
 
 os.makedirs(BASE_STREAM_DIR, exist_ok=True)
 app = Flask(__name__)
@@ -98,20 +98,21 @@ def start_stream(kanal):
         try: os.remove(master_path)
         except: pass
 
-    # --- SENARYO 1: DOĞRUDAN MPEG-TS (Tekil FFmpeg Süreci) ---
+    # --- SENARYO 1: DOĞRUDAN MPEG-TS (Kararlı Buffer & Doğrulama Ayarları) ---
     if kanal.get("type") == "direct_ts":
         cmd_ffmpeg = [
             "ffmpeg", "-y",
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
-            "-fflags", "nobuffer+fastseek",
+            "-probesize", "5000000",
+            "-analyzeduration", "5000000",
             "-i", kanal["url"],
             "-c", "copy",
             "-f", "hls",
-            "-hls_time", "2",
+            "-hls_time", "3",
             "-hls_list_size", "5",
-            "-hls_flags", "delete_segments+append_list",
+            "-hls_flags", "delete_segments+append_list+omit_endlist",
             master_path
         ]
         p_ffmpeg = subprocess.Popen(cmd_ffmpeg, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -166,7 +167,7 @@ def handle_manifest(slug):
     if slug not in active_processes or active_processes[slug][-1].poll() is not None:
         start_stream(kanal)
     
-    # 5 saniye içinde .m3u8 dosyasının yazılmasını bekle
+    # 6 saniye içinde .m3u8 dosyasının yazılmasını bekle
     if wait_for_file(os.path.join(BASE_STREAM_DIR, slug, "master.m3u8"), timeout=FLASK_FILE_WAIT_TIMEOUT):
         return send_from_directory(os.path.join(BASE_STREAM_DIR, slug), "master.m3u8")
     
