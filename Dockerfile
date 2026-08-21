@@ -1,31 +1,20 @@
-# Python tabanlı hafif Slim imajı
 FROM python:3.10-slim
 
-# Python loglarının anlık konsola düşmesini sağlar (Docker/Render log takibi için kritik)
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+# FFmpeg ve gerekli sistem araçlarını yüklüyoruz
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Sistem güncellemeleri ve FFmpeg kurulumu
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Çalışma dizinini ayarla
 WORKDIR /app
 
-# Bağımlılıkları kopyala ve en güncel sürümleriyle yükle
+# Bağımlılıkları kopyala ve yükle
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Proje dosyalarını kopyala
 COPY . .
 
-# HLS segmentlerinin yazılacağı dizini oluştur
-RUN mkdir -p hls_stream
-
-# Render / Konteyner portunu dışa aç
+# Uygulamayı çalıştır
 EXPOSE 10000
-
-# Gunicorn ile uygulamayı çalıştır
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "4", "app:app"]
+CMD ["python", "app.py"]
