@@ -6,6 +6,7 @@ import subprocess
 import requests
 from flask import Flask, send_from_directory, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+from concurrent.futures import ThreadPoolExecutor
 
 # -------------------- AYARLAR --------------------
 BASE_STREAM_DIR = "hls_stream"
@@ -14,6 +15,9 @@ USER_AGENT = "VLC/3.0.20"
 
 os.makedirs(BASE_STREAM_DIR, exist_ok=True)
 app = Flask(__name__)
+
+# Arka planda eşzamanlı kanal başlatma için Thread Pool
+executor = ThreadPoolExecutor(max_workers=10)
 
 # -------------------- KANAL LİSTESİ (23 KANAL) --------------------
 kanallar = [
@@ -53,7 +57,7 @@ CURRENT_WORKING_PROXY = None
 def get_working_tr_proxy():
     """ProxyScrape'den TR proxylerini indirir ve YouTube'a bağlanan ilk çalışan proxy'yi seçer."""
     global CURRENT_WORKING_PROXY
-    api_url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=8000&country=TR&ssl=all&anonymity=all"
+    api_url = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=3000&country=TR&ssl=all&anonymity=all"
     
     print("🌐 [Proxy Worker] ProxyScrape üzerinden TR Proxy aranıyor...")
     try:
@@ -79,9 +83,9 @@ def get_working_tr_proxy():
     CURRENT_WORKING_PROXY = None
     return None
 
-# -------------------- YAYIN MOTORU --------------------
+# -------------------- HIZLANDIRILMIŞ YAYIN MOTORU --------------------
 def start_single_channel_stream(kanal):
-    """Tekli kanal için Streamlink + FFmpeg borusunu başlatır."""
+    """Tekli kanal için optimize edilmiş Streamlink + FFmpeg borusunu başlatır."""
     slug = kanal["slug"]
     target_url = kanal["url"]
     
@@ -89,9 +93,13 @@ def start_single_channel_stream(kanal):
     os.makedirs(kanal_dir, exist_ok=True)
     output_m3u8 = os.path.join(kanal_dir, "master.m3u8")
 
+    # Fast-start Streamlink Ayarları
     streamlink_cmd = [
         "streamlink",
         "--stdout",
+        "--stream-segment-threads", "3",
+        "--retry-open", "1",
+        "--http-timeout", "5",
         "--http-header", "User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "--http-header", "Accept-Language=tr-TR,tr;q=0.9,en-US;q=0.8"
     ]
@@ -101,9 +109,12 @@ def start_single_channel_stream(kanal):
         
     streamlink_cmd.extend([target_url, "best,720p,480p,worst"])
 
+    # Fast-probesize FFmpeg Ayarları (Anında HLS segment üretimi için)
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",
+        "-probesize", "32768",
+        "-analyzeduration", "0",
         "-i", "pipe:0",
         "-c:v", "copy",
         "-c:a", "copy",
@@ -124,6 +135,12 @@ def start_single_channel_stream(kanal):
     except Exception as e:
         print(f"Kanal Başlatma Hatası ({slug}): {e}")
         return False
+
+def _async_start_worker(kanal):
+    """Arka plan thread havuzu için yardımcı fonksiyon."""
+    slug = kanal["slug"]
+    if slug not in active_processes or active_processes[slug][0].poll() is not None:
+        start_single_channel_stream(kanal)
 
 # -------------------- 3 SAATTE BİR TETİKLENEN SCHEDULER --------------------
 def periodic_refresh_job():
@@ -152,16 +169,14 @@ def index():
 
 @app.route("/start-all")
 def start_all():
-    """Tüm kanalları arka planda peşinen manuel olarak başlatır."""
-    results = {}
+    """Tüm kanalları arka planda PARALEL (asenkron) olarak instant başlatır."""
     for kanal in kanallar:
-        slug = kanal["slug"]
-        if slug not in active_processes or active_processes[slug][0].poll() is not None:
-            success = start_single_channel_stream(kanal)
-            results[slug] = "Başlatıldı" if success else "Hata"
-        else:
-            results[slug] = "Zaten Çalışıyor"
-    return jsonify(results)
+        executor.submit(_async_start_worker, kanal)
+        
+    return jsonify({
+        "status": "success",
+        "message": f"Tüm {len(kanallar)} kanal arka planda eşzamanlı olarak başlatılıyor."
+    })
 
 @app.route("/stream/<slug>/master.m3u8")
 def handle_manifest(slug):
@@ -173,7 +188,7 @@ def handle_manifest(slug):
     if slug not in active_processes or active_processes[slug][0].poll() is not None:
         print(f"🎬 {kanal['name']} için izleme isteği geldi. Yayın başlatılıyor...")
         start_single_channel_stream(kanal)
-        time.sleep(3)
+        time.sleep(30)
 
     kanal_dir = os.path.join(BASE_STREAM_DIR, slug)
     return send_from_directory(kanal_dir, "master.m3u8")
