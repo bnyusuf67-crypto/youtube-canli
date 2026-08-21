@@ -15,7 +15,7 @@ USER_AGENT = "VLC/3.0.20"
 os.makedirs(BASE_STREAM_DIR, exist_ok=True)
 app = Flask(__name__)
 
-# -------------------- KANAL LİSTESİ --------------------
+# -------------------- KANAL LİSTESİ (23 KANAL) --------------------
 kanallar = [
     {"slug": "trthaber", "name": "TRT Haber", "url": "https://www.youtube.com/@trthaber/live"},
     {"slug": "cnnturk", "name": "CNN Turk", "url": "https://www.youtube.com/@cnnturk/live"},
@@ -79,38 +79,7 @@ def get_working_tr_proxy():
     CURRENT_WORKING_PROXY = None
     return None
 
-# -------------------- MULTI-STREAM MOTORU (DYNAMIC MAP) --------------------
-def start_multi_stream(track_urls, track_names):
-    """Birden fazla m3u8/stream girdisini dinamik haritalandırarak (-map) tek hamlede HLS'e dönüştürür."""
-    ffmpeg_cmd = ["ffmpeg", "-y"]
-
-    # 1. Tüm Girdileri ekle (-i)
-    for url in track_urls:
-        ffmpeg_cmd.extend(["-i", url])
-
-    # 2. İstenen Çoklu Map Mantığı (idx / track_name döngüsü)
-    for idx, (url, track_name) in enumerate(zip(track_urls, track_names)):
-        kanal_dir = os.path.join(BASE_STREAM_DIR, track_name)
-        os.makedirs(kanal_dir, exist_ok=True)
-        output_m3u8 = os.path.join(kanal_dir, "master.m3u8")
-
-        ffmpeg_cmd.extend([
-            "-map", f"{idx}:v?", "-map", f"{idx}:a?",
-            "-c", "copy",
-            "-f", "hls",
-            "-hls_time", "4",
-            "-hls_list_size", "10",
-            "-hls_flags", "delete_segments+append_list",
-            output_m3u8
-        ])
-
-    try:
-        proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return proc
-    except Exception as e:
-        print(f"Multi-Stream Hatası: {e}")
-        return None
-
+# -------------------- YAYIN MOTORU --------------------
 def start_single_channel_stream(kanal):
     """Tekli kanal için Streamlink + FFmpeg borusunu başlatır."""
     slug = kanal["slug"]
@@ -161,10 +130,8 @@ def periodic_refresh_job():
     """Her 3 saatte bir çalışan proxy ve yayın yenileme temizlik fonksiyonu."""
     print("⏰ [3 Saatlik Zamanlayıcı] Proxy güncelleniyor ve eski süreçler temizleniyor...")
     
-    # 1. Yeni Proxy Bul
     get_working_tr_proxy()
     
-    # 2. Çalışan süreçleri (RAM/CPU birikmesini önlemek için) temizle
     for slug, (p1, p2) in list(active_processes.items()):
         try:
             if p1 and p1.poll() is None: p1.kill()
@@ -175,14 +142,26 @@ def periodic_refresh_job():
     print("✅ [3 Saatlik Zamanlayıcı] Yenileme ve temizlik tamamlandı.")
 
 scheduler = BackgroundScheduler()
-# 3 saatlik (3 hours) periyot ayarlanıyor
 scheduler.add_job(func=periodic_refresh_job, trigger="interval", hours=3)
 scheduler.start()
 
 # -------------------- FLASK ENDPOINTLERİ --------------------
 @app.route("/")
 def index():
-    return f"<h1>YouTube HLS Proxy Servisi (Multi-Map & Auto Scheduler)</h1><p>Toplam Kanal: {len(kanallar)}</p><p>Playlist URL: <a href='/playlist.m3u'>/playlist.m3u</a></p>"
+    return f"<h1>YouTube HLS Proxy Servisi</h1><p>Toplam Kanal: {len(kanallar)}</p><p>UptimeRobot Ping Sayfasıdır.</p><p>Playlist URL: <a href='/playlist.m3u'>/playlist.m3u</a></p>"
+
+@app.route("/start-all")
+def start_all():
+    """Tüm kanalları arka planda peşinen manuel olarak başlatır."""
+    results = {}
+    for kanal in kanallar:
+        slug = kanal["slug"]
+        if slug not in active_processes or active_processes[slug][0].poll() is not None:
+            success = start_single_channel_stream(kanal)
+            results[slug] = "Başlatıldı" if success else "Hata"
+        else:
+            results[slug] = "Zaten Çalışıyor"
+    return jsonify(results)
 
 @app.route("/stream/<slug>/master.m3u8")
 def handle_manifest(slug):
@@ -191,7 +170,6 @@ def handle_manifest(slug):
     if not kanal:
         return "Kanal Bulunamadı", 404
 
-    # Yayın açık değilse veya durmuşsa başlat
     if slug not in active_processes or active_processes[slug][0].poll() is not None:
         print(f"🎬 {kanal['name']} için izleme isteği geldi. Yayın başlatılıyor...")
         start_single_channel_stream(kanal)
@@ -208,7 +186,7 @@ def stream_ts_files(slug, filename):
 
 @app.route("/playlist.m3u")
 def playlist():
-    """Tüm kanalların On-Demand M3U oynatma listesini üretir."""
+    """Tüm kanalların M3U oynatma listesini üretir."""
     host = os.environ.get("SERVER_HOST", "http://127.0.0.1:10000")
     m3u_content = "#EXTM3U\n"
     for kanal in kanallar:
@@ -218,8 +196,6 @@ def playlist():
 
 # -------------------- ÇALIŞTIRMA --------------------
 if __name__ == "__main__":
-    # İlk açılışta proxy bul
     get_working_tr_proxy()
-    
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
