@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
-import re
-import sys
 import json
 import urllib.request
+import urllib.parse
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,6 +13,8 @@ PLAYLIST_FILE = "playlist.m3u"
 USER_AGENT_PLAYLIST = "VLC/3.0.20"
 TIMEOUT = 8
 MAX_WORKERS = 8
+
+INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
 kanallar = [
     {"slug": "trthaber", "name": "TRT Haber", "handle": "@trthaber"},
@@ -34,74 +35,110 @@ kanallar = [
     {"slug": "cnbce", "name": "CNBC-e", "handle": "@CNBCeTurkiye"}
 ]
 
-def get_innertube_manifest(video_id):
-    """InnerTube API'yi (ANDROID istemcisi) kullanarak HLS Manifest URL'sini alır."""
-    url = "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+def inner_tube_post(endpoint, payload, client_type="WEB"):
+    """InnerTube API'sine doğrudan JSON POST isteği gönderir."""
+    url = f"https://www.youtube.com/youtubei/v1/{endpoint}?key={INNERTUBE_KEY}"
     
-    payload = {
-        "videoId": video_id,
-        "contentCheckOk": True,
-        "racyCheckOk": True,
-        "context": {
+    if client_type == "WEB":
+        context = {
             "client": {
-                "clientName": "ANDROID",
-                "clientVersion": "21.08.266",
-                "platform": "MOBILE",
-                "osName": "Android",
-                "osVersion": "12"
+                "clientName": "WEB",
+                "clientVersion": "2.20240212.00.00",
+                "originalUrl": "https://www.youtube.com"
             }
         }
-    }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+    else:  # ANDROID
+        context = {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.29.37",
+                "platform": "MOBILE"
+            }
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "com.google.android.youtube/19.29.37 (Linux; U; Android 11)"
+        }
 
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "com.google.android.youtube/21.08.266 (Linux; U; Android 12)"
-    }
+    payload["context"] = context
+    data = json.dumps(payload).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
 
+def fetch_live_video_id(handle):
+    """
+    Canlı yayının videoId değerini dinamik olarak YouTube istemci sorguları ile bulur.
+    Yöntem 1: resolve_url
+    Yöntem 2: WEB Browse API (Emin olmak için fallback)
+    """
+    # 1. YÖNTEM: WEB resolve_url
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers)
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-            res_json = json.loads(response.read().decode("utf-8"))
+        res = inner_tube_post("navigation/resolve_url", {
+            "url": f"https://www.youtube.com/{handle}/live"
+        }, client_type="WEB")
+        
+        endpoint = res.get("endpoint", {})
+        
+        # Doğrudan watchEndpoint geldiyse videoId mevcuttur
+        v_id = endpoint.get("watchEndpoint", {}).get("videoId")
+        if v_id:
+            return v_id
             
-            # streamingData içindeki hlsManifestUrl'i çek
-            streaming_data = res_json.get("streamingData", {})
-            return streaming_data.get("hlsManifestUrl")
+        # CommandMetadata yönlendirmesinde v= var mı kontrolü
+        cmd_url = endpoint.get("commandMetadata", {}).get("webCommandMetadata", {}).get("url", "")
+        if "v=" in cmd_url:
+            return cmd_url.split("v=")[1].split("&")[0]
     except Exception:
-        return None
+        pass
+
+    # 2. YÖNTEM: HTML Headless HTTP Redirect (Yönlendirilen Canonical URL'den bulma)
+    try:
+        req = urllib.request.Request(
+            f"https://www.youtube.com/{handle}/live",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            final_url = resp.geturl()
+            if "v=" in final_url:
+                return final_url.split("v=")[1].split("&")[0]
+    except Exception:
+        pass
+
+    return None
 
 def fetch_live_stream(kanal):
-    """Kanalın yayın sayfasından video_id'yi bulup InnerTube ile akış adresi üretir."""
-    live_url = f"https://www.youtube.com/{kanal['handle']}/live"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
+    """Dynamic ID + InnerTube HLS Manifest akış adresi alma mantığı."""
     try:
-        # Step 1: Kanalın canlı yayın sayfasından videoId bul
-        req = urllib.request.Request(live_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-            html = response.read().decode('utf-8', errors='ignore')
-            
-            # Canonical URL veya JSON içerisinden 11 haneli videoId tespiti
-            match = re.search(r'href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
-            if not match:
-                match = re.search(r'"videoId":"([\w-]{11})"', html)
+        # Dinamik Video ID alma
+        video_id = fetch_live_video_id(kanal["handle"])
+        if not video_id:
+            return None
 
-            if match:
-                video_id = match.group(1)
-                # Step 2: InnerTube API çağrısı yap
-                manifest_url = get_innertube_manifest(video_id)
-                if manifest_url:
-                    kanal["manifest_url"] = manifest_url
-                    return kanal
+        # Player API ile Akış URL'si Alma
+        res_player = inner_tube_post("player", {
+            "videoId": video_id,
+            "contentCheckOk": True,
+            "racyCheckOk": True
+        }, client_type="ANDROID")
+
+        manifest_url = res_player.get("streamingData", {}).get("hlsManifestUrl")
+        if manifest_url:
+            kanal["manifest_url"] = manifest_url
+            return kanal
     except Exception:
         pass
     return None
 
 def main():
     os.makedirs(STREAMS_DIR, exist_ok=True)
-    print(f"🚀 Streamlink InnerTube Mantığı ile Canlı Yayın Taraması ({len(kanallar)} kanal)...\n")
+    print(f"🚀 Dinamik Web Parametre Bulucu Başlatıldı ({len(kanallar)} kanal)...\n")
     
     baslangic = datetime.now()
     basarili_kanallar = []
