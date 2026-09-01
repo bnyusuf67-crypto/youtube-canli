@@ -54,7 +54,7 @@ var Channels = map[string]Channel{
 	"sozcutelevizyonu": {
 		Slug:  "sozcutelevizyonu",
 		Name:  "Sözcü TV",
-		URL:   "https://m.youtube.com/watch?v=ztmY_cCtUl0",
+		URL:   "https://www.youtube.com/watch?v=ztmY_cCtUl0",
 		Group: "Haber",
 	},
 
