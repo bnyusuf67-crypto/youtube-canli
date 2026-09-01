@@ -21,4 +21,4 @@ PORT = 8000
 
 USER_AGENT = "VLC/3.0.20"
 
-DOMAIN = "https://yt.tecostream.xyz"
+DOMAIN = "http://localhost:8050"
