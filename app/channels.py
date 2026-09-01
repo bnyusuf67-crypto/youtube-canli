@@ -31,7 +31,7 @@ CHANNELS = {
     },
     "sozcutelevizyonu": {
         "name": "Sözcü TV",
-        "url": "https://m.youtube.com/watch?v=ztmY_cCtUl0",
+        "url": "https://www.youtube.com/watch?v=ztmY_cCtUl0",
         "group": "Haber"
     },
     "tgrthaber": {
